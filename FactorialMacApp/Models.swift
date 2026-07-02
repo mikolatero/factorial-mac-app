@@ -132,6 +132,138 @@ struct ClockAttempt: Codable, Identifiable, Equatable {
     }
 }
 
+struct HTTPProxySettings: Codable, Equatable {
+    var isEnabled: Bool
+    var url: String
+
+    static var defaultSettings: HTTPProxySettings {
+        HTTPProxySettings(
+            isEnabled: false,
+            url: "http://127.0.0.1:8080"
+        )
+    }
+
+    var hostPort: (host: String, port: UInt16)? {
+        guard isEnabled else {
+            return nil
+        }
+
+        let rawURL = url.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !rawURL.isEmpty else {
+            return nil
+        }
+
+        let normalizedURL = rawURL.contains("://") ? rawURL : "http://\(rawURL)"
+        guard let components = URLComponents(string: normalizedURL),
+              components.scheme?.lowercased() == "http",
+              let host = components.host?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !host.isEmpty else {
+            return nil
+        }
+
+        let port = components.port ?? 8080
+        guard (1...65_535).contains(port) else {
+            return nil
+        }
+
+        return (host, UInt16(port))
+    }
+
+    var statusText: String {
+        guard isEnabled else {
+            return "Desactivado"
+        }
+
+        guard let hostPort else {
+            return "Configuracion incompleta"
+        }
+
+        return "Activo en \(hostPort.host):\(hostPort.port)"
+    }
+}
+
+enum ChallengeSolverAPI: String, Codable, CaseIterable, Identifiable {
+    case flareSolverrV1
+    case trawlScrape
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .flareSolverrV1:
+            "FlareSolverr /v1"
+        case .trawlScrape:
+            "TRAWL /scrape"
+        }
+    }
+
+    var path: String {
+        switch self {
+        case .flareSolverrV1:
+            "/v1"
+        case .trawlScrape:
+            "/scrape"
+        }
+    }
+}
+
+struct ChallengeSolverSettings: Codable, Equatable {
+    var isEnabled: Bool
+    var api: ChallengeSolverAPI
+    var baseURL: String
+    var maxTimeoutMilliseconds: Int
+
+    static var defaultSettings: ChallengeSolverSettings {
+        ChallengeSolverSettings(
+            isEnabled: false,
+            api: .flareSolverrV1,
+            baseURL: "http://127.0.0.1:8191",
+            maxTimeoutMilliseconds: 60_000
+        )
+    }
+
+    var endpointURL: URL? {
+        guard isEnabled else {
+            return nil
+        }
+
+        let rawURL = baseURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !rawURL.isEmpty else {
+            return nil
+        }
+
+        let normalizedURL = rawURL.contains("://") ? rawURL : "http://\(rawURL)"
+        guard var components = URLComponents(string: normalizedURL),
+              components.scheme?.lowercased().hasPrefix("http") == true,
+              components.host?.isEmpty == false else {
+            return nil
+        }
+
+        let currentPath = components.path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        if currentPath.isEmpty {
+            components.path = api.path
+        }
+
+        return components.url
+    }
+
+    var clampedMaxTimeoutMilliseconds: Int {
+        min(max(maxTimeoutMilliseconds, 5_000), 180_000)
+    }
+
+    var statusText: String {
+        guard isEnabled else {
+            return "Desactivado"
+        }
+
+        guard let endpointURL else {
+            return "Configuracion incompleta"
+        }
+
+        return "Activo en \(endpointURL.absoluteString)"
+    }
+}
+
 struct AppSettings: Codable, Equatable {
     var isAutomationPaused: Bool
     var launchAtLogin: Bool
@@ -139,6 +271,28 @@ struct AppSettings: Codable, Equatable {
     var templates: [ScheduleTemplate]
     var exclusions: [ExclusionRange]
     var history: [ClockAttempt]
+    var httpProxy: HTTPProxySettings
+    var challengeSolver: ChallengeSolverSettings
+
+    init(
+        isAutomationPaused: Bool,
+        launchAtLogin: Bool,
+        selectedLocation: String,
+        templates: [ScheduleTemplate],
+        exclusions: [ExclusionRange],
+        history: [ClockAttempt],
+        httpProxy: HTTPProxySettings = .defaultSettings,
+        challengeSolver: ChallengeSolverSettings = .defaultSettings
+    ) {
+        self.isAutomationPaused = isAutomationPaused
+        self.launchAtLogin = launchAtLogin
+        self.selectedLocation = selectedLocation
+        self.templates = templates
+        self.exclusions = exclusions
+        self.history = history
+        self.httpProxy = httpProxy
+        self.challengeSolver = challengeSolver
+    }
 
     static var defaultSettings: AppSettings {
         AppSettings(
@@ -147,8 +301,33 @@ struct AppSettings: Codable, Equatable {
             selectedLocation: "Oficina",
             templates: [.standardOffice],
             exclusions: [],
-            history: []
+            history: [],
+            httpProxy: .defaultSettings,
+            challengeSolver: .defaultSettings
         )
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case isAutomationPaused
+        case launchAtLogin
+        case selectedLocation
+        case templates
+        case exclusions
+        case history
+        case httpProxy
+        case challengeSolver
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        isAutomationPaused = try container.decode(Bool.self, forKey: .isAutomationPaused)
+        launchAtLogin = try container.decode(Bool.self, forKey: .launchAtLogin)
+        selectedLocation = try container.decode(String.self, forKey: .selectedLocation)
+        templates = try container.decode([ScheduleTemplate].self, forKey: .templates)
+        exclusions = try container.decode([ExclusionRange].self, forKey: .exclusions)
+        history = try container.decode([ClockAttempt].self, forKey: .history)
+        httpProxy = try container.decodeIfPresent(HTTPProxySettings.self, forKey: .httpProxy) ?? .defaultSettings
+        challengeSolver = try container.decodeIfPresent(ChallengeSolverSettings.self, forKey: .challengeSolver) ?? .defaultSettings
     }
 }
 

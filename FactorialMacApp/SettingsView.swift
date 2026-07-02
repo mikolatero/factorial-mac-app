@@ -27,6 +27,11 @@ struct SettingsView: View {
                     Label("Ausencias", systemImage: "sun.max")
                 }
 
+            networkTab
+                .tabItem {
+                    Label("Red", systemImage: "network")
+                }
+
             loginTab
                 .tabItem {
                     Label("Login", systemImage: "lock")
@@ -89,6 +94,63 @@ struct SettingsView: View {
                         .padding(.vertical, 4)
                     }
                     .frame(minHeight: 160)
+                }
+            }
+        }
+        .formStyle(.grouped)
+        .padding()
+    }
+
+    private var networkTab: some View {
+        Form {
+            Section("Proxy HTTP") {
+                Toggle(
+                    "Usar proxy HTTP",
+                    isOn: binding(\.httpProxy.isEnabled)
+                )
+
+                TextField("URL del proxy", text: binding(\.httpProxy.url))
+                    .textFieldStyle(.roundedBorder)
+                    .disabled(!store.settings.httpProxy.isEnabled)
+
+                LabeledContent("Estado", value: store.settings.httpProxy.statusText)
+            }
+
+            Section("Resolvedor local") {
+                Toggle(
+                    "Usar FlareSolverr o TRAWL",
+                    isOn: binding(\.challengeSolver.isEnabled)
+                )
+
+                Picker("API", selection: binding(\.challengeSolver.api)) {
+                    ForEach(ChallengeSolverAPI.allCases) { api in
+                        Text(api.title).tag(api)
+                    }
+                }
+                .disabled(!store.settings.challengeSolver.isEnabled)
+
+                TextField("URL base", text: binding(\.challengeSolver.baseURL))
+                    .textFieldStyle(.roundedBorder)
+                    .disabled(!store.settings.challengeSolver.isEnabled)
+
+                Stepper(
+                    value: binding(\.challengeSolver.maxTimeoutMilliseconds),
+                    in: 5_000...180_000,
+                    step: 5_000
+                ) {
+                    LabeledContent(
+                        "Timeout",
+                        value: "\(store.settings.challengeSolver.clampedMaxTimeoutMilliseconds / 1000) s"
+                    )
+                }
+                .disabled(!store.settings.challengeSolver.isEnabled)
+
+                LabeledContent("Estado", value: store.settings.challengeSolver.statusText)
+
+                Button {
+                    appState.openLogin()
+                } label: {
+                    Label("Recargar login", systemImage: "arrow.clockwise")
                 }
             }
         }
@@ -259,7 +321,7 @@ struct SettingsView: View {
             get: { store.settings[keyPath: keyPath] },
             set: { newValue in
                 store.settings[keyPath: keyPath] = newValue
-                appState.tick()
+                appState.settingsDidChange()
             }
         )
     }

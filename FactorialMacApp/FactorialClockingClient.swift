@@ -1,10 +1,12 @@
 import Foundation
+import Network
 import WebKit
 
 enum FactorialClockingError: LocalizedError {
     case notAuthenticated
     case graphqlError(String)
     case invalidResult
+    case challengeSolverError(String)
 
     var errorDescription: String? {
         switch self {
@@ -14,6 +16,8 @@ enum FactorialClockingError: LocalizedError {
             message
         case .invalidResult:
             "Factorial devolvio una respuesta inesperada."
+        case .challengeSolverError(let message):
+            message
         }
     }
 }
@@ -31,6 +35,9 @@ final class FactorialClockingClient: NSObject, ObservableObject {
     let webView: WKWebView
 
     private let baseURL = URL(string: "https://app.factorialhr.com")!
+    private var appliedProxySettings = HTTPProxySettings.defaultSettings
+    private var appliedChallengeSolverSettings = ChallengeSolverSettings.defaultSettings
+    private var preparedChallengeSolverKey: String?
 
     override init() {
         let configuration = WKWebViewConfiguration()
@@ -43,7 +50,28 @@ final class FactorialClockingClient: NSObject, ObservableObject {
     }
 
     func openLogin() {
-        webView.load(URLRequest(url: baseURL))
+        Task { @MainActor in
+            try? await prepareChallengeSolverSessionIfNeeded(force: false)
+            loadLogin()
+        }
+    }
+
+    func applyProxySettings(_ settings: HTTPProxySettings) {
+        guard settings != appliedProxySettings else {
+            return
+        }
+
+        appliedProxySettings = settings
+        configureWebKitProxy(settings)
+    }
+
+    func applyChallengeSolverSettings(_ settings: ChallengeSolverSettings) {
+        guard settings != appliedChallengeSolverSettings else {
+            return
+        }
+
+        appliedChallengeSolverSettings = settings
+        preparedChallengeSolverKey = nil
     }
 
     func refreshAuthState() async {
@@ -71,26 +99,31 @@ final class FactorialClockingClient: NSObject, ObservableObject {
 
     private func clock(_ kind: ClockEventKind, location: String) async throws {
         if webView.url == nil {
-            openLogin()
+            try await prepareChallengeSolverSessionIfNeeded(force: false)
+            loadLogin()
             try await Task.sleep(for: .seconds(2))
         }
 
         try await refreshAuthBeforeClocking()
 
         let script = Self.graphQLClockScript(kind: kind, location: location)
-        guard let result = try await webView.callAsyncJavaScript(
-            script,
-            arguments: [:],
-            in: nil,
-            contentWorld: .page
-        ) as? [String: Any],
-              let ok = result["ok"] as? Bool else {
-            throw FactorialClockingError.invalidResult
-        }
+        var result = try await executeClockScript(script)
+        var ok = result["ok"] as? Bool ?? false
 
         if ok {
             authState = .authenticated
             return
+        }
+
+        if shouldRefreshChallengeSession(statusCode(from: result)) {
+            try await prepareChallengeSolverSessionIfNeeded(force: true)
+            result = try await executeClockScript(script)
+            ok = result["ok"] as? Bool ?? false
+
+            if ok {
+                authState = .authenticated
+                return
+            }
         }
 
         let message = result["message"] as? String ?? "Factorial rechazo el fichaje."
@@ -100,13 +133,17 @@ final class FactorialClockingClient: NSObject, ObservableObject {
                 return
             }
 
-            authState = .loginRequired
+            await refreshAuthState()
             throw FactorialClockingError.graphqlError(
-                "\(message). La sesion web esta abierta, pero la sesion de fichaje ha caducado. Vuelve a cargar Factorial en la pestana Login."
+                "\(message). La sesion web esta abierta, pero la llamada directa de fichaje ha caducado y no pude completar el fichaje desde el boton visible de Factorial. Vuelve a cargar Factorial en la pestana Login."
             )
         }
 
         throw FactorialClockingError.graphqlError(message)
+    }
+
+    private func loadLogin() {
+        webView.load(URLRequest(url: baseURL))
     }
 
     private func refreshAuthBeforeClocking() async throws {
@@ -146,6 +183,20 @@ final class FactorialClockingClient: NSObject, ObservableObject {
         return ok
     }
 
+    private func executeClockScript(_ script: String) async throws -> [String: Any] {
+        guard let result = try await webView.callAsyncJavaScript(
+            script,
+            arguments: [:],
+            in: nil,
+            contentWorld: .page
+        ) as? [String: Any],
+              result["ok"] is Bool else {
+            throw FactorialClockingError.invalidResult
+        }
+
+        return result
+    }
+
     private func statusCode(from result: [String: Any]) -> Int? {
         if let status = result["status"] as? Int {
             return status
@@ -156,6 +207,106 @@ final class FactorialClockingClient: NSObject, ObservableObject {
         }
 
         return nil
+    }
+
+    private func shouldRefreshChallengeSession(_ statusCode: Int?) -> Bool {
+        guard appliedChallengeSolverSettings.isEnabled,
+              let statusCode else {
+            return false
+        }
+
+        return [403, 429, 503].contains(statusCode)
+    }
+
+    private func configureWebKitProxy(_ settings: HTTPProxySettings) {
+        guard let hostPort = settings.hostPort else {
+            webView.configuration.websiteDataStore.proxyConfigurations = []
+            return
+        }
+
+        let endpoint = NWEndpoint.hostPort(
+            host: NWEndpoint.Host(hostPort.host),
+            port: NWEndpoint.Port(rawValue: hostPort.port)!
+        )
+
+        var proxyConfiguration = ProxyConfiguration(httpCONNECTProxy: endpoint)
+        proxyConfiguration.allowFailover = false
+        webView.configuration.websiteDataStore.proxyConfigurations = [proxyConfiguration]
+    }
+
+    private func prepareChallengeSolverSessionIfNeeded(force: Bool) async throws {
+        let settings = appliedChallengeSolverSettings
+        guard settings.isEnabled else {
+            return
+        }
+
+        guard let endpointURL = settings.endpointURL else {
+            throw FactorialClockingError.challengeSolverError("El resolvedor local no tiene una URL valida.")
+        }
+
+        let solverKey = "\(settings.api.rawValue)|\(endpointURL.absoluteString)|\(baseURL.absoluteString)"
+        if !force, preparedChallengeSolverKey == solverKey {
+            return
+        }
+
+        let solution = try await requestChallengeSolver(settings: settings, endpointURL: endpointURL)
+        if let userAgent = solution.userAgent, !userAgent.isEmpty {
+            webView.customUserAgent = userAgent
+        }
+
+        for cookie in solution.cookies {
+            guard let httpCookie = cookie.httpCookie(fallbackURL: baseURL) else {
+                continue
+            }
+
+            await setCookie(httpCookie)
+        }
+
+        preparedChallengeSolverKey = solverKey
+    }
+
+    private func requestChallengeSolver(
+        settings: ChallengeSolverSettings,
+        endpointURL: URL
+    ) async throws -> ChallengeSolverSolution {
+        var request = URLRequest(url: endpointURL)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.timeoutInterval = TimeInterval(settings.clampedMaxTimeoutMilliseconds) / 1000
+        request.httpBody = try JSONSerialization.data(withJSONObject: challengeSolverPayload(settings: settings))
+
+        let (data, response) = try await URLSession.shared.data(for: request)
+        guard let httpResponse = response as? HTTPURLResponse,
+              (200...299).contains(httpResponse.statusCode) else {
+            let status = (response as? HTTPURLResponse)?.statusCode ?? -1
+            throw FactorialClockingError.challengeSolverError("El resolvedor local respondio con HTTP \(status).")
+        }
+
+        return try ChallengeSolverSolution(data: data)
+    }
+
+    private func challengeSolverPayload(settings: ChallengeSolverSettings) -> [String: Any] {
+        switch settings.api {
+        case .flareSolverrV1:
+            [
+                "cmd": "request.get",
+                "url": baseURL.absoluteString,
+                "maxTimeout": settings.clampedMaxTimeoutMilliseconds
+            ]
+        case .trawlScrape:
+            [
+                "url": baseURL.absoluteString,
+                "maxTimeout": settings.clampedMaxTimeoutMilliseconds
+            ]
+        }
+    }
+
+    private func setCookie(_ cookie: HTTPCookie) async {
+        await withCheckedContinuation { continuation in
+            webView.configuration.websiteDataStore.httpCookieStore.setCookie(cookie) {
+                continuation.resume()
+            }
+        }
     }
 
     private static func graphQLClockScript(kind: ClockEventKind, location: String) -> String {
@@ -283,7 +434,16 @@ final class FactorialClockingClient: NSObject, ObservableObject {
         };
 
         const expectedLabels = \(expectedLabels.jsArrayLiteral);
-        const clockButtonLabels = ["fichar", "clock in", "clock out", "check in", "check out"];
+        const clockButtonLabels = [
+          "fichar",
+          "entrada",
+          "salida",
+          "clock in",
+          "clock out",
+          "check in",
+          "check out",
+          ...expectedLabels
+        ];
         const candidates = Array.from(document.querySelectorAll("button, a, [role='button']"))
           .filter(isVisible)
           .map((element) => ({
@@ -361,6 +521,153 @@ private extension String {
         }
 
         return "office"
+    }
+}
+
+private struct ChallengeSolverSolution {
+    let cookies: [ChallengeSolverCookie]
+    let userAgent: String?
+
+    init(data: Data) throws {
+        let object = try JSONSerialization.jsonObject(with: data)
+        guard let dictionary = object as? [String: Any] else {
+            throw FactorialClockingError.challengeSolverError("El resolvedor local devolvio JSON inesperado.")
+        }
+
+        if let status = dictionary["status"] as? String,
+           status.lowercased() == "error" {
+            let message = dictionary["message"] as? String ?? "El resolvedor local devolvio error."
+            throw FactorialClockingError.challengeSolverError(message)
+        }
+
+        let solution = dictionary["solution"] as? [String: Any]
+        let cookieObjects = Self.firstCookieArray(in: solution ?? dictionary) ?? []
+        cookies = cookieObjects.compactMap(ChallengeSolverCookie.init(dictionary:))
+        userAgent = Self.firstStringValue(named: "userAgent", in: solution ?? dictionary) ??
+            Self.firstStringValue(named: "user_agent", in: solution ?? dictionary)
+
+        if cookies.isEmpty, userAgent == nil {
+            throw FactorialClockingError.challengeSolverError("El resolvedor local no devolvio cookies ni user agent.")
+        }
+    }
+
+    private static func firstCookieArray(in object: Any) -> [[String: Any]]? {
+        if let dictionary = object as? [String: Any] {
+            if let cookies = dictionary["cookies"] as? [[String: Any]] {
+                return cookies
+            }
+
+            for value in dictionary.values {
+                if let cookies = firstCookieArray(in: value) {
+                    return cookies
+                }
+            }
+        }
+
+        if let array = object as? [Any] {
+            for value in array {
+                if let cookies = firstCookieArray(in: value) {
+                    return cookies
+                }
+            }
+        }
+
+        return nil
+    }
+
+    private static func firstStringValue(named name: String, in object: Any) -> String? {
+        if let dictionary = object as? [String: Any] {
+            if let value = dictionary[name] as? String, !value.isEmpty {
+                return value
+            }
+
+            for value in dictionary.values {
+                if let result = firstStringValue(named: name, in: value) {
+                    return result
+                }
+            }
+        }
+
+        if let array = object as? [Any] {
+            for value in array {
+                if let result = firstStringValue(named: name, in: value) {
+                    return result
+                }
+            }
+        }
+
+        return nil
+    }
+}
+
+private struct ChallengeSolverCookie {
+    let name: String
+    let value: String
+    let domain: String?
+    let path: String?
+    let expires: TimeInterval?
+    let httpOnly: Bool
+    let secure: Bool
+
+    init?(dictionary: [String: Any]) {
+        guard let name = dictionary["name"] as? String,
+              let value = dictionary["value"] as? String,
+              !name.isEmpty else {
+            return nil
+        }
+
+        self.name = name
+        self.value = value
+        domain = dictionary["domain"] as? String
+        path = dictionary["path"] as? String
+        expires = Self.timeInterval(from: dictionary["expires"] ?? dictionary["expiry"] ?? dictionary["expiresAt"])
+        httpOnly = dictionary["httpOnly"] as? Bool ?? dictionary["http_only"] as? Bool ?? false
+        secure = dictionary["secure"] as? Bool ?? true
+    }
+
+    func httpCookie(fallbackURL: URL) -> HTTPCookie? {
+        var properties: [HTTPCookiePropertyKey: Any] = [
+            .name: name,
+            .value: value,
+            .domain: normalizedDomain(fallbackURL: fallbackURL),
+            .path: path?.isEmpty == false ? path! : "/",
+            .secure: secure ? "TRUE" : "FALSE"
+        ]
+
+        if let expires {
+            properties[.expires] = Date(timeIntervalSince1970: expires)
+        }
+
+        if httpOnly {
+            properties[HTTPCookiePropertyKey("HttpOnly")] = "TRUE"
+        }
+
+        return HTTPCookie(properties: properties)
+    }
+
+    private func normalizedDomain(fallbackURL: URL) -> String {
+        guard let domain,
+              !domain.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return fallbackURL.host ?? "app.factorialhr.com"
+        }
+
+        return domain
+    }
+
+    private static func timeInterval(from value: Any?) -> TimeInterval? {
+        if let value = value as? TimeInterval {
+            return value
+        }
+
+        if let value = value as? Int {
+            return TimeInterval(value)
+        }
+
+        if let value = value as? String {
+            return TimeInterval(value)
+        }
+
+        return nil
     }
 }
 

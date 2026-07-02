@@ -23,6 +23,7 @@ final class AppState: ObservableObject {
         self.client = client
         self.notifications = notifications
         notifications.start()
+        applyNetworkSettings()
         tick()
         startTimer()
     }
@@ -47,6 +48,11 @@ final class AppState: ObservableObject {
         }
     }
 
+    func settingsDidChange() {
+        applyNetworkSettings()
+        tick()
+    }
+
     func manualClock(_ kind: ClockEventKind) {
         Task {
             await performClock(kind, isAutomatic: false)
@@ -68,6 +74,11 @@ final class AppState: ObservableObject {
         }
 
         nextEvent = AutomationScheduler.nextEvent(after: now, settings: store.settings)
+    }
+
+    private func applyNetworkSettings() {
+        client.applyProxySettings(store.settings.httpProxy)
+        client.applyChallengeSolverSettings(store.settings.challengeSolver)
     }
 
     private func startTimer() {

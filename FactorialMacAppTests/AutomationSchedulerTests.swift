@@ -123,6 +123,67 @@ final class AutomationSchedulerTests: XCTestCase {
         XCTAssertNil(secondEvent)
     }
 
+    func testHTTPProxyParsesHostAndPort() throws {
+        let proxy = HTTPProxySettings(
+            isEnabled: true,
+            url: "127.0.0.1:8081"
+        )
+
+        let hostPort = try XCTUnwrap(proxy.hostPort)
+
+        XCTAssertEqual(hostPort.host, "127.0.0.1")
+        XCTAssertEqual(hostPort.port, 8081)
+    }
+
+    func testHTTPProxyRejectsNonHTTPURL() {
+        let proxy = HTTPProxySettings(
+            isEnabled: true,
+            url: "https://127.0.0.1:8081"
+        )
+
+        XCTAssertNil(proxy.hostPort)
+    }
+
+    func testSettingsDecodeDefaultsHTTPProxyForOlderPayloads() throws {
+        let payload = """
+        {
+          "isAutomationPaused": false,
+          "launchAtLogin": false,
+          "selectedLocation": "Oficina",
+          "templates": [],
+          "exclusions": [],
+          "history": []
+        }
+        """.data(using: .utf8)!
+
+        let settings = try JSONDecoder.settingsDecoder.decode(AppSettings.self, from: payload)
+
+        XCTAssertEqual(settings.httpProxy, .defaultSettings)
+        XCTAssertEqual(settings.challengeSolver, .defaultSettings)
+    }
+
+    func testChallengeSolverDefaultsToFlareSolverrEndpoint() throws {
+        let solver = ChallengeSolverSettings(
+            isEnabled: true,
+            api: .flareSolverrV1,
+            baseURL: "http://127.0.0.1:8191",
+            maxTimeoutMilliseconds: 60_000
+        )
+
+        XCTAssertEqual(solver.endpointURL?.absoluteString, "http://127.0.0.1:8191/v1")
+    }
+
+    func testChallengeSolverKeepsExplicitTrawlScrapePath() throws {
+        let solver = ChallengeSolverSettings(
+            isEnabled: true,
+            api: .trawlScrape,
+            baseURL: "http://localhost:8191/scrape",
+            maxTimeoutMilliseconds: 60_000
+        )
+
+        XCTAssertEqual(solver.endpointURL?.absoluteString, "http://localhost:8191/scrape")
+    }
+
     private func date(year: Int, month: Int, day: Int, hour: Int, minute: Int) throws -> Date {
         try XCTUnwrap(
             calendar.date(
