@@ -63,6 +63,25 @@ struct SettingsView: View {
                     .textFieldStyle(.roundedBorder)
             }
 
+            Section("Entrada aleatoria") {
+                Toggle(
+                    "Activar entrada aleatoria",
+                    isOn: binding(\.clockRandomization.isEnabled)
+                )
+
+                Stepper(
+                    value: binding(\.clockRandomization.maxClockInOffsetMinutes),
+                    in: 0...60,
+                    step: 1
+                ) {
+                    LabeledContent(
+                        "Rango",
+                        value: "+/- \(store.settings.clockRandomization.clampedMaxClockInOffsetMinutes) min"
+                    )
+                }
+                .disabled(!store.settings.clockRandomization.isEnabled)
+            }
+
             Section("Estado") {
                 LabeledContent("Proximo fichaje", value: nextEventText)
                 LabeledContent("Sesion Factorial", value: authStateText)

@@ -264,6 +264,30 @@ struct ChallengeSolverSettings: Codable, Equatable {
     }
 }
 
+struct ClockRandomizationSettings: Codable, Equatable {
+    var isEnabled: Bool
+    var maxClockInOffsetMinutes: Int
+
+    static var defaultSettings: ClockRandomizationSettings {
+        ClockRandomizationSettings(
+            isEnabled: false,
+            maxClockInOffsetMinutes: 5
+        )
+    }
+
+    var clampedMaxClockInOffsetMinutes: Int {
+        min(max(maxClockInOffsetMinutes, 0), 60)
+    }
+
+    var statusText: String {
+        guard isEnabled else {
+            return "Desactivado"
+        }
+
+        return "+/- \(clampedMaxClockInOffsetMinutes) min"
+    }
+}
+
 struct AppSettings: Codable, Equatable {
     var isAutomationPaused: Bool
     var launchAtLogin: Bool
@@ -273,6 +297,7 @@ struct AppSettings: Codable, Equatable {
     var history: [ClockAttempt]
     var httpProxy: HTTPProxySettings
     var challengeSolver: ChallengeSolverSettings
+    var clockRandomization: ClockRandomizationSettings
 
     init(
         isAutomationPaused: Bool,
@@ -282,7 +307,8 @@ struct AppSettings: Codable, Equatable {
         exclusions: [ExclusionRange],
         history: [ClockAttempt],
         httpProxy: HTTPProxySettings = .defaultSettings,
-        challengeSolver: ChallengeSolverSettings = .defaultSettings
+        challengeSolver: ChallengeSolverSettings = .defaultSettings,
+        clockRandomization: ClockRandomizationSettings = .defaultSettings
     ) {
         self.isAutomationPaused = isAutomationPaused
         self.launchAtLogin = launchAtLogin
@@ -292,6 +318,7 @@ struct AppSettings: Codable, Equatable {
         self.history = history
         self.httpProxy = httpProxy
         self.challengeSolver = challengeSolver
+        self.clockRandomization = clockRandomization
     }
 
     static var defaultSettings: AppSettings {
@@ -303,7 +330,8 @@ struct AppSettings: Codable, Equatable {
             exclusions: [],
             history: [],
             httpProxy: .defaultSettings,
-            challengeSolver: .defaultSettings
+            challengeSolver: .defaultSettings,
+            clockRandomization: .defaultSettings
         )
     }
 
@@ -316,6 +344,7 @@ struct AppSettings: Codable, Equatable {
         case history
         case httpProxy
         case challengeSolver
+        case clockRandomization
     }
 
     init(from decoder: Decoder) throws {
@@ -328,6 +357,7 @@ struct AppSettings: Codable, Equatable {
         history = try container.decode([ClockAttempt].self, forKey: .history)
         httpProxy = try container.decodeIfPresent(HTTPProxySettings.self, forKey: .httpProxy) ?? .defaultSettings
         challengeSolver = try container.decodeIfPresent(ChallengeSolverSettings.self, forKey: .challengeSolver) ?? .defaultSettings
+        clockRandomization = try container.decodeIfPresent(ClockRandomizationSettings.self, forKey: .clockRandomization) ?? .defaultSettings
     }
 }
 

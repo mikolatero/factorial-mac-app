@@ -123,6 +123,60 @@ final class AutomationSchedulerTests: XCTestCase {
         XCTAssertNil(secondEvent)
     }
 
+    func testRandomizedClockInIsStableWithinConfiguredRange() throws {
+        let settings = randomizedSettings(maxOffsetMinutes: 5)
+        let now = try date(year: 2026, month: 6, day: 1, hour: 8, minute: 0)
+        let expectedClockIn = try date(year: 2026, month: 6, day: 1, hour: 9, minute: 0)
+
+        let firstEvent = try XCTUnwrap(AutomationScheduler.nextEvent(after: now, settings: settings, calendar: calendar))
+        let secondEvent = try XCTUnwrap(AutomationScheduler.nextEvent(after: now, settings: settings, calendar: calendar))
+        let offset = try XCTUnwrap(
+            calendar.dateComponents([.minute], from: expectedClockIn, to: firstEvent.scheduledAt).minute
+        )
+
+        XCTAssertEqual(firstEvent.kind, .clockIn)
+        XCTAssertEqual(firstEvent, secondEvent)
+        XCTAssertTrue((-5...5).contains(offset))
+    }
+
+    func testRandomizedClockOutIsEightHoursAfterClockIn() throws {
+        let settings = randomizedSettings(maxOffsetMinutes: 5)
+        let now = try date(year: 2026, month: 6, day: 1, hour: 8, minute: 0)
+        let clockInEvent = try XCTUnwrap(
+            AutomationScheduler.nextEvent(after: now, settings: settings, calendar: calendar)
+        )
+        let afterClockIn = try XCTUnwrap(
+            calendar.date(byAdding: .second, value: 1, to: clockInEvent.scheduledAt)
+        )
+
+        let clockOutEvent = try XCTUnwrap(
+            AutomationScheduler.nextEvent(after: afterClockIn, settings: settings, calendar: calendar)
+        )
+
+        XCTAssertEqual(clockOutEvent.kind, .clockOut)
+        XCTAssertEqual(clockOutEvent.scheduledAt.timeIntervalSince(clockInEvent.scheduledAt), 8 * 60 * 60)
+    }
+
+    func testRandomizedDueEventRunsAtRandomizedClockIn() throws {
+        let settings = randomizedSettings(maxOffsetMinutes: 5)
+        let now = try date(year: 2026, month: 6, day: 1, hour: 8, minute: 0)
+        let clockInEvent = try XCTUnwrap(
+            AutomationScheduler.nextEvent(after: now, settings: settings, calendar: calendar)
+        )
+        let dueTime = try XCTUnwrap(
+            calendar.date(byAdding: .minute, value: 1, to: clockInEvent.scheduledAt)
+        )
+
+        let dueEvent = AutomationScheduler.dueEvent(
+            now: dueTime,
+            settings: settings,
+            executedEventKeys: [],
+            calendar: calendar
+        )
+
+        XCTAssertEqual(dueEvent, clockInEvent)
+    }
+
     func testHTTPProxyParsesHostAndPort() throws {
         let proxy = HTTPProxySettings(
             isEnabled: true,
@@ -160,6 +214,7 @@ final class AutomationSchedulerTests: XCTestCase {
 
         XCTAssertEqual(settings.httpProxy, .defaultSettings)
         XCTAssertEqual(settings.challengeSolver, .defaultSettings)
+        XCTAssertEqual(settings.clockRandomization, .defaultSettings)
     }
 
     func testChallengeSolverDefaultsToFlareSolverrEndpoint() throws {
@@ -195,6 +250,35 @@ final class AutomationSchedulerTests: XCTestCase {
                     hour: hour,
                     minute: minute
                 )
+            )
+        )
+    }
+
+    private func randomizedSettings(maxOffsetMinutes: Int) -> AppSettings {
+        let template = ScheduleTemplate(
+            id: UUID(uuidString: "11111111-1111-1111-1111-111111111111")!,
+            name: "Random",
+            isActive: true,
+            workDays: [
+                WorkDaySchedule(
+                    weekday: 2,
+                    isEnabled: true,
+                    clockIn: TimeOfDay(hour: 9, minute: 0),
+                    clockOut: TimeOfDay(hour: 18, minute: 0)
+                )
+            ]
+        )
+
+        return AppSettings(
+            isAutomationPaused: false,
+            launchAtLogin: false,
+            selectedLocation: "Oficina",
+            templates: [template],
+            exclusions: [],
+            history: [],
+            clockRandomization: ClockRandomizationSettings(
+                isEnabled: true,
+                maxClockInOffsetMinutes: maxOffsetMinutes
             )
         )
     }

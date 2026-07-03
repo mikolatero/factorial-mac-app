@@ -6,6 +6,7 @@ enum FactorialClockingError: LocalizedError {
     case notAuthenticated
     case graphqlError(String)
     case invalidResult
+    case javascriptException(String)
     case challengeSolverError(String)
 
     var errorDescription: String? {
@@ -16,6 +17,8 @@ enum FactorialClockingError: LocalizedError {
             message
         case .invalidResult:
             "Factorial devolvio una respuesta inesperada."
+        case .javascriptException(let message):
+            message
         case .challengeSolverError(let message):
             message
         }
@@ -35,6 +38,7 @@ final class FactorialClockingClient: NSObject, ObservableObject {
     let webView: WKWebView
 
     private let baseURL = URL(string: "https://app.factorialhr.com")!
+    private let dashboardURL = URL(string: "https://app.factorialhr.com/dashboard")!
     private var appliedProxySettings = HTTPProxySettings.defaultSettings
     private var appliedChallengeSolverSettings = ChallengeSolverSettings.defaultSettings
     private var preparedChallengeSolverKey: String?
@@ -128,6 +132,7 @@ final class FactorialClockingClient: NSObject, ObservableObject {
 
         let message = result["message"] as? String ?? "Factorial rechazo el fichaje."
         if statusCode(from: result) == 401 {
+            try await openDashboardBeforeVisibleClocking()
             if try await clockUsingFactorialUI(kind) {
                 authState = .authenticated
                 return
@@ -160,6 +165,37 @@ final class FactorialClockingClient: NSObject, ObservableObject {
         authState = .authenticated
     }
 
+    private func openDashboardBeforeVisibleClocking() async throws {
+        let href = try await currentURLString()
+        if href.isFactorialDashboardURL {
+            return
+        }
+
+        webView.load(URLRequest(url: dashboardURL))
+        try await waitForURL(timeoutTicks: 40) { urlString in
+            urlString.isFactorialDashboardURL || urlString.isFactorialLoginURL
+        }
+
+        let updatedHref = try await currentURLString()
+        if updatedHref.isFactorialLoginURL {
+            authState = .loginRequired
+            throw FactorialClockingError.notAuthenticated
+        }
+    }
+
+    private func waitForURL(timeoutTicks: Int, matches: (String) -> Bool) async throws {
+        for _ in 0..<timeoutTicks {
+            let href = try await currentURLString()
+            if matches(href) {
+                return
+            }
+
+            try await Task.sleep(for: .milliseconds(250))
+        }
+
+        throw FactorialClockingError.graphqlError("No se pudo abrir el dashboard de Factorial antes de pulsar el boton visible.")
+    }
+
     private func currentURLString() async throws -> String {
         if let url = webView.url?.absoluteString {
             return url
@@ -170,12 +206,19 @@ final class FactorialClockingClient: NSObject, ObservableObject {
     }
 
     private func clockUsingFactorialUI(_ kind: ClockEventKind) async throws -> Bool {
-        guard let result = try await webView.callAsyncJavaScript(
-            Self.visibleClockButtonScript(kind: kind),
-            arguments: [:],
-            in: nil,
-            contentWorld: .page
-        ) as? [String: Any],
+        let rawResult: Any?
+        do {
+            rawResult = try await webView.callAsyncJavaScript(
+                Self.visibleClockButtonScript(kind: kind),
+                arguments: [:],
+                in: nil,
+                contentWorld: .page
+            )
+        } catch {
+            throw Self.enrichedJavaScriptError(from: error)
+        }
+
+        guard let result = rawResult as? [String: Any],
               let ok = result["ok"] as? Bool else {
             throw FactorialClockingError.invalidResult
         }
@@ -184,17 +227,62 @@ final class FactorialClockingClient: NSObject, ObservableObject {
     }
 
     private func executeClockScript(_ script: String) async throws -> [String: Any] {
-        guard let result = try await webView.callAsyncJavaScript(
-            script,
-            arguments: [:],
-            in: nil,
-            contentWorld: .page
-        ) as? [String: Any],
+        let rawResult: Any?
+        do {
+            rawResult = try await webView.callAsyncJavaScript(
+                script,
+                arguments: [:],
+                in: nil,
+                contentWorld: .page
+            )
+        } catch {
+            throw Self.enrichedJavaScriptError(from: error)
+        }
+
+        guard let result = rawResult as? [String: Any],
               result["ok"] is Bool else {
             throw FactorialClockingError.invalidResult
         }
 
         return result
+    }
+
+    private static func enrichedJavaScriptError(from error: Error) -> Error {
+        let nsError = error as NSError
+        guard let message = javaScriptExceptionMessage(from: nsError) else {
+            return error
+        }
+
+        return FactorialClockingError.javascriptException(message)
+    }
+
+    private static func javaScriptExceptionMessage(from error: NSError) -> String? {
+        let userInfo = error.userInfo
+        let message = userInfo["WKJavaScriptExceptionMessage"] as? String
+        let sourceURL = userInfo["WKJavaScriptExceptionSourceURL"] as? String
+        let line = (userInfo["WKJavaScriptExceptionLineNumber"] as? NSNumber)?.intValue
+        let column = (userInfo["WKJavaScriptExceptionColumnNumber"] as? NSNumber)?.intValue
+
+        guard message != nil || sourceURL != nil || line != nil || column != nil else {
+            return nil
+        }
+
+        var details = ["Excepcion JavaScript"]
+        if let message, !message.isEmpty {
+            details.append(message)
+        }
+        if let line {
+            if let column {
+                details.append("linea \(line), columna \(column)")
+            } else {
+                details.append("linea \(line)")
+            }
+        }
+        if let sourceURL, !sourceURL.isEmpty {
+            details.append(sourceURL)
+        }
+
+        return details.joined(separator: " - ")
     }
 
     private func statusCode(from result: [String: Any]) -> Int? {
@@ -361,22 +449,37 @@ final class FactorialClockingClient: NSObject, ObservableObject {
           variables.locationType = "\(locationType)";
         }
 
-        const response = await fetch("https://api.factorialhr.com/graphql?\(operationName)", {
-          method: "POST",
-          credentials: "include",
-          headers: {
-            "accept": "*/*",
-            "content-type": "application/json",
-            "x-deployment-phase": "default",
-            "x-factorial-bigint-support": "true",
-            "x-factorial-origin": "web"
-          },
-          body: JSON.stringify({
-            operationName: "\(operationName)",
-            variables,
-            query: "\(mutation.jsEscaped)"
-          })
-        });
+        const controller = new AbortController();
+        const timeoutID = setTimeout(() => controller.abort(), 30000);
+        let response;
+
+        try {
+          response = await fetch("https://api.factorialhr.com/graphql?\(operationName)", {
+            method: "POST",
+            credentials: "include",
+            signal: controller.signal,
+            headers: {
+              "accept": "*/*",
+              "content-type": "application/json",
+              "x-deployment-phase": "default",
+              "x-factorial-bigint-support": "true",
+              "x-factorial-origin": "web"
+            },
+            body: JSON.stringify({
+              operationName: "\(operationName)",
+              variables,
+              query: "\(mutation.jsEscaped)"
+            })
+          });
+        } catch (error) {
+          return {
+            ok: false,
+            status: 0,
+            message: `No se pudo ejecutar la llamada de fichaje: ${error?.message || String(error)}`
+          };
+        } finally {
+          clearTimeout(timeoutID);
+        }
 
         const payload = await response.json().catch(() => null);
         if (!response.ok) {
@@ -455,7 +558,9 @@ final class FactorialClockingClient: NSObject, ObservableObject {
         for (const candidate of candidates) {
           const card = findClockingCard(candidate.element);
           const cardText = normalize(card.innerText || card.textContent);
-          const matchesExpectedAction = expectedLabels.some((label) => cardText.includes(label));
+          const matchesExpectedAction = expectedLabels.some((label) =>
+            cardText.includes(label) || candidate.text.includes(label)
+          );
 
           if (!matchesExpectedAction) {
             continue;
@@ -484,6 +589,15 @@ extension FactorialClockingClient: WKNavigationDelegate {
 }
 
 private extension String {
+    var isFactorialDashboardURL: Bool {
+        guard let url = URL(string: self),
+              url.host?.lowercased() == "app.factorialhr.com" else {
+            return false
+        }
+
+        return url.path.lowercased().hasPrefix("/dashboard")
+    }
+
     var isFactorialLoginURL: Bool {
         let lowercased = lowercased()
         return lowercased.contains("login") ||
@@ -773,12 +887,15 @@ private extension ClockEventKind {
         case .clockIn:
             """
             entrada
+            fichar
+            sin fichar
             clock in
             check in
             """
         case .clockOut:
             """
             salida
+            salir
             clock out
             check out
             """

@@ -67,9 +67,8 @@ final class AppState: ObservableObject {
             settings: store.settings,
             executedEventKeys: executedEventKeys
         ) {
-            executedEventKeys.insert(event.eventKey)
             Task {
-                await performClock(event.kind, isAutomatic: true)
+                await performClock(event.kind, isAutomatic: true, eventKey: event.eventKey)
             }
         }
 
@@ -90,7 +89,7 @@ final class AppState: ObservableObject {
         }
     }
 
-    private func performClock(_ kind: ClockEventKind, isAutomatic: Bool) async {
+    private func performClock(_ kind: ClockEventKind, isAutomatic: Bool, eventKey: String? = nil) async {
         guard !isClocking else {
             return
         }
@@ -117,6 +116,7 @@ final class AppState: ObservableObject {
                     message: message
                 )
             )
+            markExecutedEvent(eventKey)
         } catch {
             statusMessage = error.localizedDescription
             await notifications.notifyClockFailure(
@@ -132,10 +132,19 @@ final class AppState: ObservableObject {
                     message: error.localizedDescription
                 )
             )
+            markExecutedEvent(eventKey)
         }
 
         isClocking = false
         tick()
+    }
+
+    private func markExecutedEvent(_ eventKey: String?) {
+        guard let eventKey else {
+            return
+        }
+
+        executedEventKeys.insert(eventKey)
     }
 
     private func recordMissedEventIfNeeded(now: Date) {

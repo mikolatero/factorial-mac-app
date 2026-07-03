@@ -19,6 +19,7 @@ struct ScheduledClockEvent: Equatable {
 
 enum AutomationScheduler {
     static let missedEventTolerance: TimeInterval = 5 * 60
+    private static let randomizedWorkDurationMinutes = 8 * 60
 
     static func activeTemplate(in settings: AppSettings) -> ScheduleTemplate? {
         settings.templates.first(where: \.isActive)
@@ -54,17 +55,15 @@ enum AutomationScheduler {
                 continue
             }
 
-            if let clockInDate = schedule.clockIn.date(on: day, calendar: calendar), clockInDate > date {
-                candidates.append(
-                    ScheduledClockEvent(kind: .clockIn, scheduledAt: clockInDate, templateID: template.id)
-                )
-            }
-
-            if let clockOutDate = schedule.clockOut.date(on: day, calendar: calendar), clockOutDate > date {
-                candidates.append(
-                    ScheduledClockEvent(kind: .clockOut, scheduledAt: clockOutDate, templateID: template.id)
-                )
-            }
+            candidates.append(
+                contentsOf: scheduledEvents(
+                    on: day,
+                    schedule: schedule,
+                    template: template,
+                    settings: settings,
+                    calendar: calendar
+                ).filter { $0.scheduledAt > date }
+            )
         }
 
         return candidates.min { $0.scheduledAt < $1.scheduledAt }
@@ -87,22 +86,16 @@ enum AutomationScheduler {
             return nil
         }
 
-        let candidates = [
-            (ClockEventKind.clockIn, schedule.clockIn),
-            (ClockEventKind.clockOut, schedule.clockOut)
-        ]
+        let candidates = scheduledEvents(
+            on: now,
+            schedule: schedule,
+            template: template,
+            settings: settings,
+            calendar: calendar
+        )
 
-        for candidate in candidates {
-            guard let scheduledAt = candidate.1.date(on: now, calendar: calendar) else {
-                continue
-            }
-
-            let event = ScheduledClockEvent(
-                kind: candidate.0,
-                scheduledAt: scheduledAt,
-                templateID: template.id
-            )
-            let elapsed = now.timeIntervalSince(scheduledAt)
+        for event in candidates {
+            let elapsed = now.timeIntervalSince(event.scheduledAt)
 
             if elapsed >= 0,
                elapsed <= missedEventTolerance,
@@ -112,5 +105,102 @@ enum AutomationScheduler {
         }
 
         return nil
+    }
+
+    private static func scheduledEvents(
+        on day: Date,
+        schedule: WorkDaySchedule,
+        template: ScheduleTemplate,
+        settings: AppSettings,
+        calendar: Calendar
+    ) -> [ScheduledClockEvent] {
+        guard let clockInDate = clockInDate(
+            on: day,
+            schedule: schedule,
+            template: template,
+            settings: settings,
+            calendar: calendar
+        ) else {
+            return []
+        }
+
+        let clockOutDate: Date?
+        if settings.clockRandomization.isEnabled {
+            clockOutDate = calendar.date(
+                byAdding: .minute,
+                value: randomizedWorkDurationMinutes,
+                to: clockInDate
+            )
+        } else {
+            clockOutDate = schedule.clockOut.date(on: day, calendar: calendar)
+        }
+
+        var events = [
+            ScheduledClockEvent(kind: .clockIn, scheduledAt: clockInDate, templateID: template.id)
+        ]
+
+        if let clockOutDate {
+            events.append(
+                ScheduledClockEvent(kind: .clockOut, scheduledAt: clockOutDate, templateID: template.id)
+            )
+        }
+
+        return events
+    }
+
+    private static func clockInDate(
+        on day: Date,
+        schedule: WorkDaySchedule,
+        template: ScheduleTemplate,
+        settings: AppSettings,
+        calendar: Calendar
+    ) -> Date? {
+        guard let scheduledClockInDate = schedule.clockIn.date(on: day, calendar: calendar),
+              settings.clockRandomization.isEnabled else {
+            return schedule.clockIn.date(on: day, calendar: calendar)
+        }
+
+        let offset = stableClockInOffsetMinutes(
+            on: day,
+            templateID: template.id,
+            maxOffsetMinutes: settings.clockRandomization.clampedMaxClockInOffsetMinutes,
+            calendar: calendar
+        )
+
+        return calendar.date(byAdding: .minute, value: offset, to: scheduledClockInDate)
+    }
+
+    private static func stableClockInOffsetMinutes(
+        on day: Date,
+        templateID: UUID,
+        maxOffsetMinutes: Int,
+        calendar: Calendar
+    ) -> Int {
+        guard maxOffsetMinutes > 0 else {
+            return 0
+        }
+
+        let components = calendar.dateComponents([.year, .month, .day], from: day)
+        let seed = String(
+            format: "%@-%04d-%02d-%02d",
+            templateID.uuidString,
+            components.year ?? 0,
+            components.month ?? 0,
+            components.day ?? 0
+        )
+        let range = maxOffsetMinutes * 2 + 1
+
+        return Int(stableHash(seed) % UInt64(range)) - maxOffsetMinutes
+    }
+
+    private static func stableHash(_ value: String) -> UInt64 {
+        var hash: UInt64 = 14_695_981_039_346_656_037
+
+        for byte in value.utf8 {
+            hash ^= UInt64(byte)
+            hash = hash &* 1_099_511_628_211
+        }
+
+        return hash
     }
 }
