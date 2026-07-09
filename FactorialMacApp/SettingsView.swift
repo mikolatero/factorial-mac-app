@@ -5,10 +5,13 @@ struct SettingsView: View {
     @EnvironmentObject private var appState: AppState
     @EnvironmentObject private var store: SettingsStore
     @EnvironmentObject private var client: FactorialClockingClient
+    @EnvironmentObject private var logStore: AppLogStore
 
     @State private var exclusionTitle = "Vacaciones"
     @State private var exclusionStart = Date()
     @State private var exclusionEnd = Date()
+    @State private var selectedLogLevel = "all"
+    @State private var logSearchText = ""
 
     var body: some View {
         TabView {
@@ -36,6 +39,11 @@ struct SettingsView: View {
                 .tabItem {
                     Label("Login", systemImage: "lock")
                 }
+
+            logsTab
+                .tabItem {
+                    Label("Logs", systemImage: "terminal")
+                }
         }
         .padding()
         .onAppear {
@@ -47,8 +55,8 @@ struct SettingsView: View {
         Form {
             Section("Automatizacion") {
                 Toggle(
-                    "Pausar fichajes automaticos",
-                    isOn: binding(\.isAutomationPaused)
+                    "Activar fichajes automaticos",
+                    isOn: automationEnabledBinding
                 )
 
                 Toggle(
@@ -69,15 +77,31 @@ struct SettingsView: View {
                     isOn: binding(\.clockRandomization.isEnabled)
                 )
 
-                Stepper(
-                    value: binding(\.clockRandomization.maxClockInOffsetMinutes),
-                    in: 0...60,
-                    step: 1
-                ) {
-                    LabeledContent(
-                        "Rango",
-                        value: "+/- \(store.settings.clockRandomization.clampedMaxClockInOffsetMinutes) min"
-                    )
+                LabeledContent("Rango") {
+                    HStack(spacing: 8) {
+                        Text("+/-")
+                            .foregroundStyle(.secondary)
+
+                        TextField(
+                            "Min",
+                            value: clockInOffsetMinutesBinding,
+                            format: .number
+                        )
+                        .textFieldStyle(.roundedBorder)
+                        .monospacedDigit()
+                        .frame(width: 56)
+
+                        Text("min")
+                            .foregroundStyle(.secondary)
+
+                        Stepper(
+                            "Rango",
+                            value: clockInOffsetMinutesBinding,
+                            in: 0...60,
+                            step: 1
+                        )
+                        .labelsHidden()
+                    }
                 }
                 .disabled(!store.settings.clockRandomization.isEnabled)
             }
@@ -225,41 +249,132 @@ struct SettingsView: View {
     }
 
     private var exclusionsTab: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            Form {
-                Section("Nuevo bloqueo") {
-                    TextField("Nombre", text: $exclusionTitle)
-                    DatePicker("Inicio", selection: $exclusionStart, displayedComponents: .date)
-                    DatePicker("Fin", selection: $exclusionEnd, displayedComponents: .date)
+        VStack(alignment: .leading, spacing: 22) {
+            VStack(alignment: .leading, spacing: 10) {
+                Text("Nueva ausencia")
+                    .font(.headline)
+
+                HStack(alignment: .bottom, spacing: 14) {
+                    LabeledAbsenceField(title: "Nombre") {
+                        TextField("Nombre", text: $exclusionTitle)
+                            .textFieldStyle(.roundedBorder)
+                            .frame(minWidth: 240)
+                    }
+
+                    LabeledAbsenceField(title: "Inicio", alignment: .center) {
+                        DatePicker("", selection: $exclusionStart, displayedComponents: .date)
+                            .labelsHidden()
+                            .datePickerStyle(.compact)
+                            .fixedSize()
+                    }
+                    .frame(width: 128)
+
+                    LabeledAbsenceField(title: "Fin", alignment: .center) {
+                        DatePicker("", selection: $exclusionEnd, displayedComponents: .date)
+                            .labelsHidden()
+                            .datePickerStyle(.compact)
+                            .fixedSize()
+                    }
+                    .frame(width: 128)
+
                     Button {
                         addExclusion()
                     } label: {
-                        Label("Anadir rango", systemImage: "plus")
+                        Label("Añadir ausencia", systemImage: "plus")
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.large)
+                }
+                .padding(16)
+                .background(Color(nsColor: .controlBackgroundColor))
+                .clipShape(RoundedRectangle(cornerRadius: 8))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 8)
+                        .stroke(.separator)
+                }
+            }
+            .frame(maxWidth: .infinity)
+
+            VStack(alignment: .leading, spacing: 10) {
+                HStack {
+                    Text("Ausencias guardadas")
+                        .font(.headline)
+
+                    Spacer()
+
+                    Text("\(store.settings.exclusions.count)")
+                        .font(.caption.weight(.semibold))
+                        .monospacedDigit()
+                        .foregroundStyle(.secondary)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 3)
+                        .background(Color(nsColor: .controlBackgroundColor))
+                        .clipShape(Capsule())
+                }
+
+                Divider()
+
+                if store.settings.exclusions.isEmpty {
+                    ContentUnavailableView("Sin ausencias guardadas", systemImage: "calendar.badge.plus")
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else {
+                    ScrollView {
+                        LazyVStack(spacing: 8) {
+                            ForEach(store.settings.exclusions) { exclusion in
+                                AbsenceRow(
+                                    title: exclusion.title,
+                                    dateRange: exclusionDateRangeText(exclusion),
+                                    onRemove: {
+                                        removeExclusion(exclusion.id)
+                                    }
+                                )
+                            }
+                        }
+                        .padding(.vertical, 2)
                     }
                 }
             }
-            .formStyle(.grouped)
-            .frame(height: 190)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+        .padding()
+    }
 
-            List {
-                ForEach(store.settings.exclusions) { exclusion in
-                    HStack {
-                        VStack(alignment: .leading) {
-                            Text(exclusion.title)
-                                .font(.headline)
-                            Text("\(exclusion.startDate.formatted(date: .abbreviated, time: .omitted)) - \(exclusion.endDate.formatted(date: .abbreviated, time: .omitted))")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
-                        Spacer()
-                        Button {
-                            removeExclusion(exclusion.id)
-                        } label: {
-                            Image(systemName: "trash")
-                        }
-                        .buttonStyle(.borderless)
+    private var logsTab: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 10) {
+                Picker("Nivel", selection: $selectedLogLevel) {
+                    Text("Todos").tag("all")
+                    ForEach(AppLogLevel.allCases) { level in
+                        Text(level.title).tag(level.rawValue)
                     }
-                    .padding(.vertical, 4)
+                }
+                .pickerStyle(.segmented)
+                .frame(width: 360)
+
+                TextField("Filtrar", text: $logSearchText)
+                    .textFieldStyle(.roundedBorder)
+
+                Button {
+                    copyLogs()
+                } label: {
+                    Label("Copiar", systemImage: "doc.on.doc")
+                }
+                .disabled(logStore.entries.isEmpty)
+
+                Button(role: .destructive) {
+                    logStore.clear()
+                } label: {
+                    Label("Limpiar", systemImage: "trash")
+                }
+                .disabled(logStore.entries.isEmpty)
+            }
+
+            if filteredLogEntries.isEmpty {
+                ContentUnavailableView("Sin logs", systemImage: "terminal")
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                List(filteredLogEntries) { entry in
+                    LogEntryRow(entry: entry)
                 }
             }
         }
@@ -272,7 +387,13 @@ struct SettingsView: View {
                 Button {
                     appState.openLogin()
                 } label: {
-                    Label("Abrir Factorial", systemImage: "safari")
+                    Label("Abrir dashboard", systemImage: "safari")
+                }
+
+                Button {
+                    appState.refreshDashboard()
+                } label: {
+                    Label("Refrescar", systemImage: "arrow.clockwise")
                 }
 
                 Button {
@@ -335,11 +456,44 @@ struct SettingsView: View {
         }
     }
 
+    private var filteredLogEntries: [AppLogEntry] {
+        logStore.entries.filter { entry in
+            let matchesLevel = selectedLogLevel == "all" || entry.level.rawValue == selectedLogLevel
+            let query = logSearchText.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            let matchesQuery = query.isEmpty ||
+                entry.message.lowercased().contains(query) ||
+                entry.source.lowercased().contains(query) ||
+                entry.level.title.lowercased().contains(query)
+
+            return matchesLevel && matchesQuery
+        }
+    }
+
     private func binding<Value>(_ keyPath: WritableKeyPath<AppSettings, Value>) -> Binding<Value> {
         Binding(
             get: { store.settings[keyPath: keyPath] },
             set: { newValue in
                 store.settings[keyPath: keyPath] = newValue
+                appState.settingsDidChange()
+            }
+        )
+    }
+
+    private var automationEnabledBinding: Binding<Bool> {
+        Binding(
+            get: { !store.settings.isAutomationPaused },
+            set: { enabled in
+                store.settings.isAutomationPaused = !enabled
+                appState.settingsDidChange()
+            }
+        )
+    }
+
+    private var clockInOffsetMinutesBinding: Binding<Int> {
+        Binding(
+            get: { store.settings.clockRandomization.clampedMaxClockInOffsetMinutes },
+            set: { minutes in
+                store.settings.clockRandomization.maxClockInOffsetMinutes = min(max(minutes, 0), 60)
                 appState.settingsDidChange()
             }
         )
@@ -427,6 +581,16 @@ struct SettingsView: View {
         appState.tick()
     }
 
+    private func exclusionDateRangeText(_ exclusion: ExclusionRange) -> String {
+        "\(exclusion.startDate.formatted(date: .abbreviated, time: .omitted)) - \(exclusion.endDate.formatted(date: .abbreviated, time: .omitted))"
+    }
+
+    private func copyLogs() {
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        pasteboard.setString(logStore.plainText, forType: .string)
+    }
+
     private func weekdayName(_ weekday: Int) -> String {
         let symbols = Calendar.madrid.weekdaySymbols
         return symbols[max(0, min(weekday - 1, symbols.count - 1))].capitalized
@@ -451,6 +615,121 @@ struct SettingsView: View {
             .orange
         case .failed:
             .red
+        }
+    }
+}
+
+private struct LogEntryRow: View {
+    let entry: AppLogEntry
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            HStack(spacing: 8) {
+                Text(entry.date.formatted(date: .omitted, time: .standard))
+                    .font(.caption)
+                    .monospacedDigit()
+                    .foregroundStyle(.secondary)
+
+                Text(entry.level.title)
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(levelColor)
+                    .frame(width: 58, alignment: .leading)
+
+                Text(entry.source)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
+                Spacer()
+            }
+
+            Text(entry.message.isEmpty ? "(sin mensaje)" : entry.message)
+                .font(.system(.caption, design: .monospaced))
+                .textSelection(.enabled)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .padding(.vertical, 4)
+    }
+
+    private var levelColor: Color {
+        switch entry.level {
+        case .debug:
+            .secondary
+        case .info:
+            .blue
+        case .warning:
+            .orange
+        case .error:
+            .red
+        }
+    }
+}
+
+private struct LabeledAbsenceField<Content: View>: View {
+    let title: String
+    let alignment: HorizontalAlignment
+    @ViewBuilder var content: Content
+
+    init(
+        title: String,
+        alignment: HorizontalAlignment = .leading,
+        @ViewBuilder content: () -> Content
+    ) {
+        self.title = title
+        self.alignment = alignment
+        self.content = content()
+    }
+
+    var body: some View {
+        VStack(alignment: alignment, spacing: 6) {
+            Text(title)
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+
+            content
+        }
+    }
+}
+
+private struct AbsenceRow: View {
+    let title: String
+    let dateRange: String
+    let onRemove: () -> Void
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Image(systemName: "calendar")
+                .font(.system(size: 16, weight: .medium))
+                .foregroundStyle(.blue)
+                .frame(width: 28, height: 28)
+                .background(Color.blue.opacity(0.12))
+                .clipShape(RoundedRectangle(cornerRadius: 6))
+
+            VStack(alignment: .leading, spacing: 3) {
+                Text(title)
+                    .font(.headline)
+
+                Text(dateRange)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            Spacer()
+
+            Button(role: .destructive) {
+                onRemove()
+            } label: {
+                Image(systemName: "trash")
+            }
+            .buttonStyle(.borderless)
+            .foregroundStyle(.secondary)
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 10)
+        .background(Color(nsColor: .controlBackgroundColor).opacity(0.72))
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+        .overlay {
+            RoundedRectangle(cornerRadius: 8)
+                .stroke(.separator.opacity(0.55))
         }
     }
 }

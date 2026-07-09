@@ -37,26 +37,68 @@ final class FactorialClockingClient: NSObject, ObservableObject {
 
     let webView: WKWebView
 
+    private let javaScriptLogMessageHandler: JavaScriptLogMessageHandler
     private let baseURL = URL(string: "https://app.factorialhr.com")!
     private let dashboardURL = URL(string: "https://app.factorialhr.com/dashboard")!
     private var appliedProxySettings = HTTPProxySettings.defaultSettings
     private var appliedChallengeSolverSettings = ChallengeSolverSettings.defaultSettings
     private var preparedChallengeSolverKey: String?
+    private weak var logStore: AppLogStore?
 
     override init() {
+        let messageHandler = JavaScriptLogMessageHandler()
+        javaScriptLogMessageHandler = messageHandler
+
         let configuration = WKWebViewConfiguration()
         configuration.websiteDataStore = .default()
         configuration.preferences.javaScriptCanOpenWindowsAutomatically = true
+        configuration.userContentController.addUserScript(Self.javaScriptConsoleCaptureScript)
+        configuration.userContentController.add(messageHandler, name: "factorialAppLog")
 
         webView = WKWebView(frame: .zero, configuration: configuration)
         super.init()
         webView.navigationDelegate = self
     }
 
+    func attachLogStore(_ logStore: AppLogStore) {
+        self.logStore = logStore
+        javaScriptLogMessageHandler.logStore = logStore
+    }
+
     func openLogin() {
         Task { @MainActor in
-            try? await prepareChallengeSolverSessionIfNeeded(force: false)
-            loadLogin()
+            try? await refreshDashboardFromOrigin(reason: "Abriendo Factorial")
+        }
+    }
+
+    func refreshDashboardFromOrigin(reason: String = "Refrescando dashboard") async throws {
+        logStore?.info(reason, source: "WebKit")
+        try await prepareChallengeSolverSessionIfNeeded(force: false)
+
+        webView.stopLoading()
+        let href = try? await currentURLString()
+        if href?.isFactorialDashboardURL == true {
+            logStore?.debug("Recargando dashboard desde origen", source: "WebKit")
+            webView.reloadFromOrigin()
+        } else {
+            var request = URLRequest(url: dashboardURL)
+            request.cachePolicy = .reloadIgnoringLocalAndRemoteCacheData
+            logStore?.debug(dashboardURL.absoluteString, source: "WebKit")
+            webView.load(request)
+        }
+
+        try await waitForDashboardDocument(timeoutTicks: 160)
+        authState = .authenticated
+        await logVisibleDashboardClockButtons()
+    }
+
+    func refreshDashboardManually() {
+        Task { @MainActor in
+            do {
+                try await refreshDashboardFromOrigin(reason: "Refresco manual del dashboard")
+            } catch {
+                logStore?.error(error.localizedDescription, source: "WebKit")
+            }
         }
     }
 
@@ -66,6 +108,7 @@ final class FactorialClockingClient: NSObject, ObservableObject {
         }
 
         appliedProxySettings = settings
+        logStore?.info(settings.statusText, source: "Proxy")
         configureWebKitProxy(settings)
     }
 
@@ -76,6 +119,7 @@ final class FactorialClockingClient: NSObject, ObservableObject {
 
         appliedChallengeSolverSettings = settings
         preparedChallengeSolverKey = nil
+        logStore?.info(settings.statusText, source: "Resolvedor")
     }
 
     func refreshAuthState() async {
@@ -88,8 +132,10 @@ final class FactorialClockingClient: NSObject, ObservableObject {
         do {
             let href = try await currentURLString()
             authState = href.isFactorialLoginURL ? .loginRequired : .authenticated
+            logStore?.debug("Estado de sesion: \(authState.logTitle)", source: "Auth")
         } catch {
             authState = .unknown
+            logStore?.warning("No se pudo comprobar la sesion: \(error.localizedDescription)", source: "Auth")
         }
     }
 
@@ -102,10 +148,14 @@ final class FactorialClockingClient: NSObject, ObservableObject {
     }
 
     private func clock(_ kind: ClockEventKind, location: String) async throws {
+        logStore?.info("Iniciando \(kind.title.lowercased())", source: "Fichaje")
+
         if webView.url == nil {
             try await prepareChallengeSolverSessionIfNeeded(force: false)
-            loadLogin()
+            try await refreshDashboardFromOrigin(reason: "Preparando dashboard para fichar")
             try await Task.sleep(for: .seconds(2))
+        } else {
+            try await refreshDashboardFromOrigin(reason: "Recargando dashboard antes de fichar")
         }
 
         try await refreshAuthBeforeClocking()
@@ -115,26 +165,46 @@ final class FactorialClockingClient: NSObject, ObservableObject {
         var ok = result["ok"] as? Bool ?? false
 
         if ok {
-            authState = .authenticated
+            try await finishGraphQLClock(kind, message: "\(kind.title) completada por GraphQL")
             return
         }
 
         if shouldRefreshChallengeSession(statusCode(from: result)) {
+            logStore?.warning("Factorial respondio con HTTP \(statusCode(from: result) ?? 0). Refrescando sesion del resolvedor.", source: "Fichaje")
             try await prepareChallengeSolverSessionIfNeeded(force: true)
             result = try await executeClockScript(script)
             ok = result["ok"] as? Bool ?? false
 
             if ok {
-                authState = .authenticated
+                try await finishGraphQLClock(
+                    kind,
+                    message: "\(kind.title) completada despues de refrescar el resolvedor"
+                )
                 return
             }
         }
 
         let message = result["message"] as? String ?? "Factorial rechazo el fichaje."
-        if statusCode(from: result) == 401 {
-            try await openDashboardBeforeVisibleClocking()
+        logStore?.warning(message, source: "Fichaje")
+        if statusCode(from: result) == 401 || confirmationMissing(from: result) {
+            if confirmationMissing(from: result) {
+                do {
+                    try await verifyVisibleClockState(kind, reloadDashboard: true)
+                    authState = .authenticated
+                    logStore?.info("\(kind.title) confirmada desde el dashboard", source: "Fichaje")
+                    return
+                } catch {
+                    logStore?.warning(
+                        "La UI todavia no confirmo \(kind.title.lowercased()): \(error.localizedDescription)",
+                        source: "Fichaje"
+                    )
+                }
+            }
+
+            try await openDashboardBeforeVisibleClocking(kind)
             if try await clockUsingFactorialUI(kind) {
                 authState = .authenticated
+                logStore?.info("\(kind.title) completada desde la UI visible", source: "Fichaje")
                 return
             }
 
@@ -147,7 +217,39 @@ final class FactorialClockingClient: NSObject, ObservableObject {
         throw FactorialClockingError.graphqlError(message)
     }
 
+    private func finishGraphQLClock(_ kind: ClockEventKind, message: String) async throws {
+        do {
+            try await verifyVisibleClockState(kind, reloadDashboard: true)
+        } catch {
+            logStore?.warning(
+                "GraphQL respondio correctamente, pero la UI de Factorial no confirmo el estado: \(error.localizedDescription)",
+                source: "Fichaje"
+            )
+
+            do {
+                try await openDashboardBeforeVisibleClocking(kind)
+                if try await clockUsingFactorialUI(kind) {
+                    authState = .authenticated
+                    logStore?.info("\(kind.title) completada desde la UI visible", source: "Fichaje")
+                    return
+                }
+            } catch {
+                throw FactorialClockingError.graphqlError(
+                    "Factorial no mostro el estado confirmado tras el fichaje. No se marca como OK para evitar un falso positivo."
+                )
+            }
+
+            throw FactorialClockingError.graphqlError(
+                "Factorial no mostro el estado confirmado tras el fichaje. No se marca como OK para evitar un falso positivo."
+            )
+        }
+
+        authState = .authenticated
+        logStore?.info(message, source: "Fichaje")
+    }
+
     private func loadLogin() {
+        logStore?.debug(baseURL.absoluteString, source: "WebKit")
         webView.load(URLRequest(url: baseURL))
     }
 
@@ -165,16 +267,9 @@ final class FactorialClockingClient: NSObject, ObservableObject {
         authState = .authenticated
     }
 
-    private func openDashboardBeforeVisibleClocking() async throws {
-        let href = try await currentURLString()
-        if href.isFactorialDashboardURL {
-            return
-        }
-
-        webView.load(URLRequest(url: dashboardURL))
-        try await waitForURL(timeoutTicks: 40) { urlString in
-            urlString.isFactorialDashboardURL || urlString.isFactorialLoginURL
-        }
+    private func openDashboardBeforeVisibleClocking(_ kind: ClockEventKind) async throws {
+        try await refreshDashboardFromOrigin(reason: "Recargando dashboard antes del fichaje visible")
+        try await waitForDashboardClockButton(kind, timeoutTicks: 80)
 
         let updatedHref = try await currentURLString()
         if updatedHref.isFactorialLoginURL {
@@ -183,33 +278,237 @@ final class FactorialClockingClient: NSObject, ObservableObject {
         }
     }
 
-    private func waitForURL(timeoutTicks: Int, matches: (String) -> Bool) async throws {
+    private func waitForDashboardClockButton(_ kind: ClockEventKind, timeoutTicks: Int) async throws {
         for _ in 0..<timeoutTicks {
             let href = try await currentURLString()
-            if matches(href) {
-                return
+
+            if href.isFactorialLoginURL {
+                authState = .loginRequired
+                throw FactorialClockingError.notAuthenticated
+            }
+
+            if href.isFactorialDashboardURL {
+                if try await isDashboardReady() {
+                    let buttonState = try await visibleClockButtonState(kind)
+                    if buttonState.ok {
+                        logStore?.info("Veo el boton de \(kind.visibleButtonLogName)", source: "Fichaje")
+                        return
+                    }
+
+                    logStore?.debug(
+                        buttonState.message ?? "No veo el boton de \(kind.visibleButtonLogName) en el dashboard.",
+                        source: "Fichaje"
+                    )
+                }
             }
 
             try await Task.sleep(for: .milliseconds(250))
         }
 
-        throw FactorialClockingError.graphqlError("No se pudo abrir el dashboard de Factorial antes de pulsar el boton visible.")
+        let href = (try? await currentURLString()) ?? "URL desconocida"
+        let message = "No veo el boton de \(kind.visibleButtonLogName) en el dashboard de Factorial. URL actual: \(href)"
+        logStore?.error(message, source: "Fichaje")
+        throw FactorialClockingError.graphqlError(message)
     }
 
     private func currentURLString() async throws -> String {
-        if let url = webView.url?.absoluteString {
-            return url
+        if let result = try? await webView.evaluateJavaScript("window.location.href") as? String,
+           !result.isEmpty {
+            return result
         }
 
-        let result = try await webView.evaluateJavaScript("window.location.href")
-        return result as? String ?? ""
+        return webView.url?.absoluteString ?? ""
+    }
+
+    private func waitForDashboardDocument(timeoutTicks: Int) async throws {
+        var stableDashboardTicks = 0
+
+        for _ in 0..<timeoutTicks {
+            let href = try await currentURLString()
+
+            if href.isFactorialLoginURL {
+                authState = .loginRequired
+                throw FactorialClockingError.notAuthenticated
+            }
+
+            if href.isFactorialDashboardURL, try await isDashboardReady() {
+                stableDashboardTicks += 1
+                if stableDashboardTicks >= 3 {
+                    return
+                }
+            } else {
+                stableDashboardTicks = 0
+            }
+
+            try await Task.sleep(for: .milliseconds(250))
+        }
+
+        let href = (try? await currentURLString()) ?? "URL desconocida"
+        await logVisibleDashboardClockButtons()
+        throw FactorialClockingError.graphqlError("No se pudo cargar el dashboard de Factorial. URL actual: \(href)")
+    }
+
+    private func isDashboardReady() async throws -> Bool {
+        let readyState = (try? await webView.evaluateJavaScript("document.readyState")) as? String
+        guard readyState == "interactive" || readyState == "complete" else {
+            return false
+        }
+
+        let rawResult: Any?
+        do {
+            rawResult = try await webView.callAsyncJavaScript(
+                Self.dashboardReadinessScript,
+                arguments: [:],
+                in: nil,
+                contentWorld: .page
+            )
+        } catch {
+            throw Self.enrichedJavaScriptError(from: error)
+        }
+
+        guard let result = rawResult as? [String: Any],
+              let isReady = result["ready"] as? Bool else {
+            return false
+        }
+
+        return isReady
+    }
+
+    private func logVisibleDashboardClockButtons() async {
+        let href = (try? await currentURLString()) ?? "URL desconocida"
+        guard href.isFactorialDashboardURL else {
+            logStore?.warning("No puedo inspeccionar botones: no estoy en dashboard. URL actual: \(href)", source: "Fichaje")
+            return
+        }
+
+        await logVisibleDashboardClockButton(.clockIn)
+        await logVisibleDashboardClockButton(.clockOut)
+    }
+
+    private func logVisibleDashboardClockButton(_ kind: ClockEventKind) async {
+        do {
+            let state = try await visibleClockButtonState(kind)
+            if state.ok {
+                logStore?.info("Veo el boton de \(kind.visibleButtonLogName)", source: "Fichaje")
+            } else {
+                let details = state.message ?? "Sin detalle adicional."
+                let message = "No veo el boton de \(kind.visibleButtonLogName). \(details)"
+                logStore?.warning(message, source: "Fichaje")
+            }
+        } catch {
+            logStore?.warning(
+                "Error buscando el boton de \(kind.visibleButtonLogName): \(error.localizedDescription)",
+                source: "Fichaje"
+            )
+        }
     }
 
     private func clockUsingFactorialUI(_ kind: ClockEventKind) async throws -> Bool {
         let rawResult: Any?
         do {
+            rawResult = try await callVisibleClockButtonScript(kind)
+        } catch {
+            guard Self.isJavaScriptCompletionHandlerLost(error) else {
+                throw Self.enrichedJavaScriptError(from: error)
+            }
+
+            logStore?.warning("La pagina cambio durante el fichaje visible. Reintentando...", source: "Fichaje")
+            try await openDashboardBeforeVisibleClocking(kind)
+            do {
+                rawResult = try await callVisibleClockButtonScript(kind)
+            } catch {
+                throw Self.enrichedJavaScriptError(from: error)
+            }
+        }
+
+        guard let result = rawResult as? [String: Any],
+              let ok = result["ok"] as? Bool else {
+            throw FactorialClockingError.invalidResult
+        }
+
+        if ok {
+            try await verifyVisibleClockState(kind, reloadDashboard: false)
+        }
+
+        return ok
+    }
+
+    private func verifyVisibleClockState(_ kind: ClockEventKind, reloadDashboard: Bool) async throws {
+        logStore?.info("Verificando estado visible de \(kind.title.lowercased())", source: "Fichaje")
+
+        let initialHref = try await currentURLString()
+        if reloadDashboard || !initialHref.isFactorialDashboardURL {
+            try await refreshDashboardFromOrigin(reason: "Recargando dashboard para confirmar \(kind.title.lowercased())")
+        }
+
+        var lastMessage: String?
+        var didReloadDashboard = reloadDashboard
+
+        for tick in 0..<80 {
+            let href = try await currentURLString()
+            if href.isFactorialLoginURL {
+                authState = .loginRequired
+                throw FactorialClockingError.notAuthenticated
+            }
+
+            if href.isFactorialDashboardURL {
+                let readyState = (try? await webView.evaluateJavaScript("document.readyState")) as? String
+                let isReady = readyState == "interactive" || readyState == "complete"
+
+                if isReady {
+                    let rawResult: Any?
+                    do {
+                        rawResult = try await webView.callAsyncJavaScript(
+                            Self.visibleClockStateScript(kind: kind),
+                            arguments: [:],
+                            in: nil,
+                            contentWorld: .page
+                        )
+                    } catch {
+                        throw Self.enrichedJavaScriptError(from: error)
+                    }
+
+                    guard let result = rawResult as? [String: Any],
+                          let ok = result["ok"] as? Bool else {
+                        throw FactorialClockingError.invalidResult
+                    }
+
+                    if ok {
+                        switch kind {
+                        case .clockIn:
+                            logStore?.info("Veo el boton de salida", source: "Fichaje")
+                        case .clockOut:
+                            logStore?.info("Veo el boton de fichaje", source: "Fichaje")
+                        }
+                        return
+                    }
+
+                    lastMessage = result["message"] as? String
+                }
+            }
+
+            if !didReloadDashboard, tick == 30 {
+                try await refreshDashboardFromOrigin(reason: "Recargando dashboard para reintentar confirmacion")
+                didReloadDashboard = true
+            }
+
+            try await Task.sleep(for: .milliseconds(250))
+        }
+
+        let fallbackMessage = "No se pudo confirmar en Factorial que \(kind.confirmedStateDescription)."
+        throw FactorialClockingError.graphqlError(lastMessage ?? fallbackMessage)
+    }
+
+    private func hasVisibleClockButton(_ kind: ClockEventKind) async throws -> Bool {
+        let state = try await visibleClockButtonState(kind)
+        return state.ok
+    }
+
+    private func visibleClockButtonState(_ kind: ClockEventKind) async throws -> VisibleClockButtonState {
+        let rawResult: Any?
+        do {
             rawResult = try await webView.callAsyncJavaScript(
-                Self.visibleClockButtonScript(kind: kind),
+                Self.visibleClockButtonScript(kind: kind, shouldClick: false),
                 arguments: [:],
                 in: nil,
                 contentWorld: .page
@@ -220,10 +519,20 @@ final class FactorialClockingClient: NSObject, ObservableObject {
 
         guard let result = rawResult as? [String: Any],
               let ok = result["ok"] as? Bool else {
-            throw FactorialClockingError.invalidResult
+            return VisibleClockButtonState(ok: false, message: "Factorial devolvio un estado de boton inesperado.")
         }
 
-        return ok
+        let message = result["message"] as? String
+        return VisibleClockButtonState(ok: ok, message: message)
+    }
+
+    private func callVisibleClockButtonScript(_ kind: ClockEventKind) async throws -> Any? {
+        try await webView.callAsyncJavaScript(
+            Self.visibleClockButtonScript(kind: kind, shouldClick: true),
+            arguments: [:],
+            in: nil,
+            contentWorld: .page
+        )
     }
 
     private func executeClockScript(_ script: String) async throws -> [String: Any] {
@@ -285,6 +594,13 @@ final class FactorialClockingClient: NSObject, ObservableObject {
         return details.joined(separator: " - ")
     }
 
+    private static func isJavaScriptCompletionHandlerLost(_ error: Error) -> Bool {
+        let nsError = error as NSError
+        let message = nsError.userInfo["WKJavaScriptExceptionMessage"] as? String ?? nsError.localizedDescription
+        return message.localizedCaseInsensitiveContains("completion handler") &&
+            message.localizedCaseInsensitiveContains("no longer reachable")
+    }
+
     private func statusCode(from result: [String: Any]) -> Int? {
         if let status = result["status"] as? Int {
             return status
@@ -295,6 +611,10 @@ final class FactorialClockingClient: NSObject, ObservableObject {
         }
 
         return nil
+    }
+
+    private func confirmationMissing(from result: [String: Any]) -> Bool {
+        result["confirmationMissing"] as? Bool ?? false
     }
 
     private func shouldRefreshChallengeSession(_ statusCode: Int?) -> Bool {
@@ -309,6 +629,7 @@ final class FactorialClockingClient: NSObject, ObservableObject {
     private func configureWebKitProxy(_ settings: HTTPProxySettings) {
         guard let hostPort = settings.hostPort else {
             webView.configuration.websiteDataStore.proxyConfigurations = []
+            logStore?.debug("Proxy desactivado en WebKit", source: "Proxy")
             return
         }
 
@@ -320,6 +641,7 @@ final class FactorialClockingClient: NSObject, ObservableObject {
         var proxyConfiguration = ProxyConfiguration(httpCONNECTProxy: endpoint)
         proxyConfiguration.allowFailover = false
         webView.configuration.websiteDataStore.proxyConfigurations = [proxyConfiguration]
+        logStore?.debug("Proxy aplicado en WebKit: \(hostPort.host):\(hostPort.port)", source: "Proxy")
     }
 
     private func prepareChallengeSolverSessionIfNeeded(force: Bool) async throws {
@@ -329,6 +651,7 @@ final class FactorialClockingClient: NSObject, ObservableObject {
         }
 
         guard let endpointURL = settings.endpointURL else {
+            logStore?.error("El resolvedor local no tiene una URL valida.", source: "Resolvedor")
             throw FactorialClockingError.challengeSolverError("El resolvedor local no tiene una URL valida.")
         }
 
@@ -337,9 +660,11 @@ final class FactorialClockingClient: NSObject, ObservableObject {
             return
         }
 
+        logStore?.info("Preparando sesion con \(settings.api.title)", source: "Resolvedor")
         let solution = try await requestChallengeSolver(settings: settings, endpointURL: endpointURL)
         if let userAgent = solution.userAgent, !userAgent.isEmpty {
             webView.customUserAgent = userAgent
+            logStore?.debug("User agent aplicado desde el resolvedor", source: "Resolvedor")
         }
 
         for cookie in solution.cookies {
@@ -351,6 +676,7 @@ final class FactorialClockingClient: NSObject, ObservableObject {
         }
 
         preparedChallengeSolverKey = solverKey
+        logStore?.info("Sesion del resolvedor preparada con \(solution.cookies.count) cookies", source: "Resolvedor")
     }
 
     private func requestChallengeSolver(
@@ -363,10 +689,12 @@ final class FactorialClockingClient: NSObject, ObservableObject {
         request.timeoutInterval = TimeInterval(settings.clampedMaxTimeoutMilliseconds) / 1000
         request.httpBody = try JSONSerialization.data(withJSONObject: challengeSolverPayload(settings: settings))
 
+        logStore?.debug("POST \(endpointURL.absoluteString)", source: "Resolvedor")
         let (data, response) = try await URLSession.shared.data(for: request)
         guard let httpResponse = response as? HTTPURLResponse,
               (200...299).contains(httpResponse.statusCode) else {
             let status = (response as? HTTPURLResponse)?.statusCode ?? -1
+            logStore?.error("El resolvedor local respondio con HTTP \(status).", source: "Resolvedor")
             throw FactorialClockingError.challengeSolverError("El resolvedor local respondio con HTTP \(status).")
         }
 
@@ -397,6 +725,43 @@ final class FactorialClockingClient: NSObject, ObservableObject {
         }
     }
 
+    private static let dashboardReadinessScript = """
+    const normalize = (value) => (value || "")
+      .normalize("NFD")
+      .replace(/[\\u0300-\\u036f]/g, "")
+      .toLowerCase()
+      .replace(/\\s+/g, " ")
+      .trim();
+
+    const bodyText = normalize(document.body?.innerText || document.body?.textContent);
+    const hasPageText = bodyText.length > 40;
+    const hasClockingText = bodyText.includes("fichaje") ||
+      bodyText.includes("sin fichar") ||
+      bodyText.includes("salida") ||
+      bodyText.includes("fichar") ||
+      bodyText.includes("clock in") ||
+      bodyText.includes("clock out") ||
+      bodyText.includes("attendance");
+
+    const hasInteractiveContent = Array.from(document.querySelectorAll("button, a, [role='button']"))
+      .some((element) => {
+        const style = window.getComputedStyle(element);
+        const rect = element.getBoundingClientRect();
+        return style.visibility !== "hidden" &&
+          style.display !== "none" &&
+          rect.width > 0 &&
+          rect.height > 0;
+      });
+
+    return {
+      ready: hasPageText && hasInteractiveContent,
+      hasPageText,
+      hasClockingText,
+      hasInteractiveContent,
+      textSample: bodyText.slice(0, 240)
+    };
+    """
+
     private static func graphQLClockScript(kind: ClockEventKind, location: String) -> String {
         let operationName = kind.operationName
         let mutation = kind.graphQLMutation
@@ -416,12 +781,16 @@ final class FactorialClockingClient: NSObject, ObservableObject {
           return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
         };
         const extractErrors = (payload) => {
+          const mutationPayloadName = "\(operationName)" === "ClockIn" ?
+            "clockInAttendanceShift" :
+            "forgotClockOutAttendanceShift";
+
           if (payload?.errors?.length) {
             return payload.errors.map((error) => error.message || String(error)).join("\\n");
           }
 
           const mutationRoot = payload?.data?.attendanceMutations;
-          const mutationPayload = mutationRoot?.clockInAttendanceShift || mutationRoot?.forgotClockOutAttendanceShift;
+          const mutationPayload = mutationRoot?.[mutationPayloadName];
           const errors = mutationPayload?.errors || [];
           if (!errors.length) {
             return "";
@@ -495,12 +864,36 @@ final class FactorialClockingClient: NSObject, ObservableObject {
           return { ok: false, status: response.status, message: errorMessage };
         }
 
-        return { ok: true, status: response.status };
+        const mutationPayloadName = "\(operationName)" === "ClockIn" ?
+          "clockInAttendanceShift" :
+          "forgotClockOutAttendanceShift";
+        const mutationPayload = payload?.data?.attendanceMutations?.[mutationPayloadName];
+        const shift = mutationPayload?.shift || null;
+        const clockIn = typeof shift?.clockIn === "string" ? shift.clockIn : "";
+        const clockOut = typeof shift?.clockOut === "string" ? shift.clockOut : "";
+        const hasClockIn = clockIn.length > 0;
+        const hasClockOut = clockOut.length > 0;
+        const isConfirmed = "\(operationName)" === "ClockIn" ?
+          hasClockIn && !hasClockOut :
+          hasClockIn && hasClockOut;
+
+        if (!isConfirmed) {
+          return {
+            ok: false,
+            status: response.status,
+            confirmationMissing: true,
+            message: "\(kind.missingGraphQLConfirmationMessage)",
+            shift
+          };
+        }
+
+        return { ok: true, status: response.status, clockIn, clockOut };
         """
     }
 
-    private static func visibleClockButtonScript(kind: ClockEventKind) -> String {
+    private static func visibleClockButtonScript(kind: ClockEventKind, shouldClick: Bool) -> String {
         let expectedLabels = kind.visibleActionLabels
+        let clickAction = shouldClick ? "candidate.element.click();" : ""
 
         return """
         const normalize = (value) => (value || "")
@@ -524,16 +917,31 @@ final class FactorialClockingClient: NSObject, ObservableObject {
             rect.height > 0;
         };
 
+        const isDirectExpectedAction = (text) => {
+          if ("\(kind.rawValue)" === "clockIn") {
+            return text === "fichar" ||
+              text === "entrada" ||
+              text.includes("fichar entrada") ||
+              text.includes("clock in") ||
+              text.includes("check in");
+          }
+
+          return text === "salida" ||
+            text.includes("fichar salida") ||
+            text.includes("clock out") ||
+            text.includes("check out");
+        };
+
         const findClockingCard = (button) => {
           let node = button;
-          for (let depth = 0; node && depth < 8; depth += 1, node = node.parentElement) {
+          for (let depth = 0; node && depth < 14; depth += 1, node = node.parentElement) {
             const text = normalize(node.innerText || node.textContent);
             if (text.includes("fichaje") || text.includes("attendance")) {
               return node;
             }
           }
 
-          return button.parentElement || document.body;
+          return null;
         };
 
         const expectedLabels = \(expectedLabels.jsArrayLiteral);
@@ -557,27 +965,237 @@ final class FactorialClockingClient: NSObject, ObservableObject {
 
         for (const candidate of candidates) {
           const card = findClockingCard(candidate.element);
-          const cardText = normalize(card.innerText || card.textContent);
-          const matchesExpectedAction = expectedLabels.some((label) =>
-            cardText.includes(label) || candidate.text.includes(label)
-          );
+          const directMatch = isDirectExpectedAction(candidate.text);
+          const cardText = card ? normalize(card.innerText || card.textContent) : "";
+          const matchesExpectedAction = directMatch ||
+            expectedLabels.some((label) => cardText.includes(label) || candidate.text.includes(label));
 
-          if (!matchesExpectedAction) {
+          if (!matchesExpectedAction || (!card && !directMatch)) {
             continue;
           }
 
-          candidate.element.click();
-          await new Promise((resolve) => setTimeout(resolve, 1500));
-          return { ok: true, clicked: true };
+          \(clickAction)
+          return { ok: true, clicked: \(shouldClick ? "true" : "false") };
         }
+
+        const visibleButtonTexts = candidates
+          .map((candidate) => candidate.text)
+          .filter(Boolean)
+          .slice(0, 12)
+          .join(", ");
 
         return {
           ok: false,
           actionMismatch: candidates.length > 0,
-          message: "No se encontro un boton de fichaje visible que coincidiera con la accion esperada."
+          message: visibleButtonTexts.length > 0 ?
+            `No veo el boton esperado. Botones candidatos visibles: ${visibleButtonTexts}` :
+            "No veo botones visibles de fichaje o salida."
         };
         """
     }
+
+    private static func visibleClockStateScript(kind: ClockEventKind) -> String {
+        let expectedState = kind == .clockIn ? "clockedIn" : "clockedOut"
+
+        return """
+        const normalize = (value) => (value || "")
+          .normalize("NFD")
+          .replace(/[\\u0300-\\u036f]/g, "")
+          .toLowerCase()
+          .replace(/\\s+/g, " ")
+          .trim();
+
+        if (normalize(window.location.href).includes("login")) {
+          return { ok: false, authRequired: true, message: "La pagina de Factorial esta en login." };
+        }
+
+        const isVisible = (element) => {
+          const style = window.getComputedStyle(element);
+          const rect = element.getBoundingClientRect();
+          return style.visibility !== "hidden" &&
+            style.display !== "none" &&
+            !element.disabled &&
+            rect.width > 0 &&
+            rect.height > 0;
+        };
+
+        const textOf = (element) => normalize(
+          element.innerText ||
+            element.textContent ||
+            element.getAttribute("aria-label") ||
+            ""
+        );
+
+        const interactiveElements = Array.from(document.querySelectorAll("button, a, [role='button']"))
+          .filter(isVisible);
+
+        const findClockingCard = (element) => {
+          let node = element;
+          for (let depth = 0; node && depth < 8; depth += 1, node = node.parentElement) {
+            const text = textOf(node);
+            if (
+              text.includes("fichaje") &&
+              (
+                text.includes("sin fichar") ||
+                text.includes("fichar") ||
+                text.includes("salida") ||
+                text.includes("clock in") ||
+                text.includes("clock out") ||
+                text.includes("check in") ||
+                text.includes("check out")
+              )
+            ) {
+              return node;
+            }
+          }
+
+          return null;
+        };
+
+        const unique = (values) => {
+          const seen = new Set();
+          return values.filter((value) => {
+            if (!value || seen.has(value)) {
+              return false;
+            }
+            seen.add(value);
+            return true;
+          });
+        };
+
+        const cardsFromButtons = interactiveElements
+          .map(findClockingCard)
+          .filter(Boolean);
+
+        const cardsFromText = Array.from(document.querySelectorAll("section, article, aside, main, div"))
+          .filter(isVisible)
+          .filter((element) => {
+            const text = textOf(element);
+            return text.includes("fichaje") &&
+              (
+                text.includes("sin fichar") ||
+                text.includes("fichar") ||
+                text.includes("salida")
+              );
+          })
+          .sort((left, right) => {
+            const leftRect = left.getBoundingClientRect();
+            const rightRect = right.getBoundingClientRect();
+            return (leftRect.width * leftRect.height) - (rightRect.width * rightRect.height);
+          })
+          .slice(0, 6);
+
+        const cards = unique([...cardsFromButtons, ...cardsFromText]);
+
+        for (const card of cards) {
+          const cardText = textOf(card);
+          const cardButtons = interactiveElements
+            .filter((element) => card.contains(element))
+            .map(textOf);
+          const hasInactiveText = cardText.includes("sin fichar");
+          const hasClockInAction = cardButtons.some((text) =>
+            text.includes("fichar") ||
+            text.includes("entrada") ||
+            text.includes("clock in") ||
+            text.includes("check in")
+          );
+          const hasClockOutAction = cardButtons.some((text) =>
+            text.includes("salida") ||
+            text.includes("clock out") ||
+            text.includes("check out")
+          );
+
+          if ("\(expectedState)" === "clockedIn") {
+            if (!hasInactiveText && hasClockOutAction) {
+              return { ok: true, state: "clockedIn" };
+            }
+          } else if (hasInactiveText || (hasClockInAction && !hasClockOutAction)) {
+            return { ok: true, state: "clockedOut" };
+          }
+        }
+
+        const pageText = textOf(document.body);
+        return {
+          ok: false,
+          message: "\(kind.visibleConfirmationMissingMessage)",
+          sawInactiveText: pageText.includes("sin fichar"),
+          sawClockInAction: pageText.includes("fichar"),
+          sawClockOutAction: pageText.includes("salida")
+        };
+        """
+    }
+
+    private static let javaScriptConsoleCaptureScript = WKUserScript(
+        source: """
+        (() => {
+          if (window.__factorialMacLogInstalled) {
+            return;
+          }
+          window.__factorialMacLogInstalled = true;
+
+          const handler = window.webkit?.messageHandlers?.factorialAppLog;
+          if (!handler) {
+            return;
+          }
+
+          const stringify = (value) => {
+            if (value instanceof Error) {
+              return `${value.name}: ${value.message}${value.stack ? `\\n${value.stack}` : ""}`;
+            }
+            if (typeof value === "string") {
+              return value;
+            }
+            try {
+              return JSON.stringify(value);
+            } catch {
+              return String(value);
+            }
+          };
+
+          const post = (level, source, values, extra = {}) => {
+            try {
+              handler.postMessage({
+                level,
+                source,
+                message: values.map(stringify).join(" "),
+                url: window.location.href,
+                ...extra
+              });
+            } catch {}
+          };
+
+          const levels = {
+            debug: "debug",
+            log: "info",
+            info: "info",
+            warn: "warning",
+            error: "error"
+          };
+
+          Object.keys(levels).forEach((method) => {
+            const original = console[method]?.bind(console);
+            console[method] = (...values) => {
+              post(levels[method], "JavaScript console", values);
+              original?.(...values);
+            };
+          });
+
+          window.addEventListener("error", (event) => {
+            post("error", "JavaScript error", [event.message], {
+              url: event.filename || window.location.href,
+              line: event.lineno,
+              column: event.colno
+            });
+          });
+
+          window.addEventListener("unhandledrejection", (event) => {
+            post("error", "JavaScript promise", [event.reason]);
+          });
+        })();
+        """,
+        injectionTime: .atDocumentStart,
+        forMainFrameOnly: false
+    )
 }
 
 extension FactorialClockingClient: WKNavigationDelegate {
@@ -586,6 +1204,24 @@ extension FactorialClockingClient: WKNavigationDelegate {
             await refreshAuthState()
         }
     }
+}
+
+private extension FactorialAuthState {
+    var logTitle: String {
+        switch self {
+        case .unknown:
+            "desconocida"
+        case .loginRequired:
+            "login requerido"
+        case .authenticated:
+            "autenticada"
+        }
+    }
+}
+
+private struct VisibleClockButtonState {
+    let ok: Bool
+    let message: String?
 }
 
 private extension String {
@@ -899,6 +1535,42 @@ private extension ClockEventKind {
             clock out
             check out
             """
+        }
+    }
+
+    var visibleButtonLogName: String {
+        switch self {
+        case .clockIn:
+            "fichaje"
+        case .clockOut:
+            "salida"
+        }
+    }
+
+    var confirmedStateDescription: String {
+        switch self {
+        case .clockIn:
+            "la entrada haya quedado activa"
+        case .clockOut:
+            "la salida haya quedado registrada"
+        }
+    }
+
+    var missingGraphQLConfirmationMessage: String {
+        switch self {
+        case .clockIn:
+            "Factorial respondio, pero no devolvio una entrada activa confirmada."
+        case .clockOut:
+            "Factorial respondio, pero no devolvio una salida confirmada."
+        }
+    }
+
+    var visibleConfirmationMissingMessage: String {
+        switch self {
+        case .clockIn:
+            "Factorial sigue sin mostrar el estado Fichaje activo."
+        case .clockOut:
+            "Factorial sigue sin mostrar la salida registrada."
         }
     }
 }

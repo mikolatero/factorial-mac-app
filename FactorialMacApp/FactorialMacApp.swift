@@ -10,6 +10,7 @@ struct FactorialMacApp: App {
                 .environmentObject(appState)
                 .environmentObject(appState.store)
                 .environmentObject(appState.client)
+                .environmentObject(appState.logStore)
         }
         .menuBarExtraStyle(.window)
 
@@ -18,6 +19,7 @@ struct FactorialMacApp: App {
                 .environmentObject(appState)
                 .environmentObject(appState.store)
                 .environmentObject(appState.client)
+                .environmentObject(appState.logStore)
                 .frame(minWidth: 760, minHeight: 620)
         }
     }

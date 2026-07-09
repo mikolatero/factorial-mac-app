@@ -19,6 +19,7 @@
 		4A00002A0000000000000001 /* LoginItemController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4A00001A0000000000000001 /* LoginItemController.swift */; };
 		4A00002B0000000000000001 /* AutomationSchedulerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4A00001B0000000000000001 /* AutomationSchedulerTests.swift */; };
 		4A00002C0000000000000001 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 4A00001C0000000000000001 /* Assets.xcassets */; };
+		4A00002D0000000000000001 /* AppLogStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4A00001D0000000000000001 /* AppLogStore.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -46,6 +47,7 @@
 		4A00001A0000000000000001 /* LoginItemController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LoginItemController.swift; sourceTree = "<group>"; };
 		4A00001B0000000000000001 /* AutomationSchedulerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AutomationSchedulerTests.swift; sourceTree = "<group>"; };
 		4A00001C0000000000000001 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		4A00001D0000000000000001 /* AppLogStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppLogStore.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -97,6 +99,7 @@
 				4A0000180000000000000001 /* MenuBarView.swift */,
 				4A0000190000000000000001 /* SettingsView.swift */,
 				4A00001A0000000000000001 /* LoginItemController.swift */,
+				4A00001D0000000000000001 /* AppLogStore.swift */,
 				4A00001C0000000000000001 /* Assets.xcassets */,
 			);
 			path = FactorialMacApp;
@@ -220,6 +223,7 @@
 				4A0000280000000000000001 /* MenuBarView.swift in Sources */,
 				4A0000290000000000000001 /* SettingsView.swift in Sources */,
 				4A00002A0000000000000001 /* LoginItemController.swift in Sources */,
+				4A00002D0000000000000001 /* AppLogStore.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -390,7 +394,7 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 1.5;
+				MARKETING_VERSION = 1.7;
 				PRODUCT_BUNDLE_IDENTIFIER = com.sys4net.factorialclock;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				RUNTIME_EXCEPTION_ALLOW_DYLD_ENVIRONMENT_VARIABLES = NO;
@@ -431,7 +435,7 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 1.5;
+				MARKETING_VERSION = 1.7;
 				PRODUCT_BUNDLE_IDENTIFIER = com.sys4net.factorialclock;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				RUNTIME_EXCEPTION_ALLOW_DYLD_ENVIRONMENT_VARIABLES = NO;
