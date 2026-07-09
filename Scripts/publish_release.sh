@@ -8,7 +8,8 @@ PACKAGE_RESOLVED="$ROOT_DIR/FactorialMacApp.xcodeproj/project.xcworkspace/xcshar
 DERIVED_DATA_DIR="$ROOT_DIR/build/DerivedData"
 RELEASE_INFO_PATH="$ROOT_DIR/dist/release.env"
 REPOSITORY="mikolatero/factorial-mac-app"
-APP_BUNDLE_ID="com.sys4net.factorialclock"
+APP_BUNDLE_ID="com.mikolatero.factorialclock"
+export APP_BUNDLE_ID
 
 usage() {
     echo "Uso: Scripts/publish_release.sh \"Mensaje del cambio\"" >&2
@@ -55,7 +56,7 @@ read_app_build_setting() {
         my $key = $ENV{SETTING_KEY};
         while (/buildSettings = \{.*?\n\t\t\t\};/sg) {
             my $block = $&;
-            next unless $block =~ /PRODUCT_BUNDLE_IDENTIFIER = com\.sys4net\.factorialclock;/;
+            next unless $block =~ /PRODUCT_BUNDLE_IDENTIFIER = \Q$ENV{APP_BUNDLE_ID}\E;/;
             if ($block =~ /\Q$key\E = ([^;]+);/) {
                 my $value = $1;
                 $value =~ s/^"//;
@@ -97,7 +98,7 @@ set_app_build_settings() {
         my $updated = 0;
         $content =~ s@(buildSettings = \{.*?\n\t\t\t\};)@
             my $block = $1;
-            if ($block =~ /PRODUCT_BUNDLE_IDENTIFIER = com\.sys4net\.factorialclock;/) {
+            if ($block =~ /PRODUCT_BUNDLE_IDENTIFIER = \Q$ENV{APP_BUNDLE_ID}\E;/) {
                 $block =~ s!MARKETING_VERSION = [^;]+;!MARKETING_VERSION = $ENV{NEW_MARKETING_VERSION};!;
                 $block =~ s!CURRENT_PROJECT_VERSION = [^;]+;!CURRENT_PROJECT_VERSION = $ENV{NEW_CURRENT_PROJECT_VERSION};!;
                 $updated++;
