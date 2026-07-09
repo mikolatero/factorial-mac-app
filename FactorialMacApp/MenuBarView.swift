@@ -5,6 +5,7 @@ struct MenuBarView: View {
     @EnvironmentObject private var appState: AppState
     @EnvironmentObject private var store: SettingsStore
     @EnvironmentObject private var client: FactorialClockingClient
+    @EnvironmentObject private var softwareUpdateController: SoftwareUpdateController
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -45,6 +46,16 @@ struct MenuBarView: View {
                 .foregroundStyle(.secondary)
                 .lineLimit(3)
                 .frame(maxWidth: .infinity, alignment: .leading)
+
+            Divider()
+
+            Button {
+                softwareUpdateController.checkForUpdates()
+            } label: {
+                Label("Buscar actualizaciones...", systemImage: "arrow.down.circle")
+                    .frame(maxWidth: .infinity)
+            }
+            .disabled(!softwareUpdateController.canCheckForUpdates)
 
             Divider()
 

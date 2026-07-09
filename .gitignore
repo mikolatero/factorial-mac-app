@@ -1,6 +1,9 @@
 .DS_Store
 DerivedData/
 build/
+dist/
 *.xcuserstate
 xcuserdata/
 *.moved-aside
+*.ed25519
+*.sparkle_private_key

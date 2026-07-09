@@ -1,0 +1,14 @@
+<?xml version="1.0" standalone="yes"?>
+<rss xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle" version="2.0">
+    <channel>
+        <title>FactorialMacApp</title>
+        <item>
+            <title>1.7.1</title>
+            <pubDate>Thu, 09 Jul 2026 09:50:26 +0200</pubDate>
+            <sparkle:version>2</sparkle:version>
+            <sparkle:shortVersionString>1.7.1</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
+            <enclosure url="https://github.com/mikolatero/factorial-mac-app/releases/download/v1.7.1/FactorialClock-1.7.1-2.zip" length="4524598" type="application/octet-stream" sparkle:edSignature="mUhjPIS9yJv0ZRD2EJEX72cNSWqF3U3Yq2hdr88EQplfPjWglS9BBHfv5LbQojdc6Mj1MTwVJntxKB+u33d0Cw=="/>
+        </item>
+    </channel>
+</rss>

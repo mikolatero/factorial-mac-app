@@ -20,6 +20,8 @@
 		4A00002B0000000000000001 /* AutomationSchedulerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4A00001B0000000000000001 /* AutomationSchedulerTests.swift */; };
 		4A00002C0000000000000001 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 4A00001C0000000000000001 /* Assets.xcassets */; };
 		4A00002D0000000000000001 /* AppLogStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4A00001D0000000000000001 /* AppLogStore.swift */; };
+		4A1000210000000000000001 /* SoftwareUpdateController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4A1000110000000000000001 /* SoftwareUpdateController.swift */; };
+		4A1000300000000000000001 /* Sparkle in Frameworks */ = {isa = PBXBuildFile; productRef = 4A1000310000000000000001 /* Sparkle */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -48,6 +50,8 @@
 		4A00001B0000000000000001 /* AutomationSchedulerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AutomationSchedulerTests.swift; sourceTree = "<group>"; };
 		4A00001C0000000000000001 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		4A00001D0000000000000001 /* AppLogStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppLogStore.swift; sourceTree = "<group>"; };
+		4A1000110000000000000001 /* SoftwareUpdateController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SoftwareUpdateController.swift; sourceTree = "<group>"; };
+		4A1000120000000000000001 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -55,6 +59,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				4A1000300000000000000001 /* Sparkle in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -89,6 +94,7 @@
 		4A0000100000000000000001 /* FactorialMacApp */ = {
 			isa = PBXGroup;
 			children = (
+				4A1000120000000000000001 /* Info.plist */,
 				4A0000110000000000000001 /* FactorialMacApp.swift */,
 				4A0000120000000000000001 /* AppState.swift */,
 				4A0000130000000000000001 /* Models.swift */,
@@ -100,6 +106,7 @@
 				4A0000190000000000000001 /* SettingsView.swift */,
 				4A00001A0000000000000001 /* LoginItemController.swift */,
 				4A00001D0000000000000001 /* AppLogStore.swift */,
+				4A1000110000000000000001 /* SoftwareUpdateController.swift */,
 				4A00001C0000000000000001 /* Assets.xcassets */,
 			);
 			path = FactorialMacApp;
@@ -129,6 +136,9 @@
 			dependencies = (
 			);
 			name = FactorialMacApp;
+			packageProductDependencies = (
+				4A1000310000000000000001 /* Sparkle */,
+			);
 			productName = FactorialMacApp;
 			productReference = 4A0000030000000000000001 /* FactorialMacApp.app */;
 			productType = "com.apple.product-type.application";
@@ -179,6 +189,9 @@
 			);
 			mainGroup = 4A0000020000000000000001;
 			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+				4A1000320000000000000001 /* XCRemoteSwiftPackageReference "Sparkle" */,
+			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 4A0000050000000000000001 /* Products */;
 			projectDirPath = "";
@@ -224,6 +237,7 @@
 				4A0000290000000000000001 /* SettingsView.swift in Sources */,
 				4A00002A0000000000000001 /* LoginItemController.swift in Sources */,
 				4A00002D0000000000000001 /* AppLogStore.swift in Sources */,
+				4A1000210000000000000001 /* SoftwareUpdateController.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -373,12 +387,12 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_INCLUDE_ALL_APPICON_ASSETS = NO;
 				AUTOMATION_APPLE_EVENTS = NO;
-				"CODE_SIGN_IDENTITY[sdk=macosx*]" = "Apple Development";
-				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1;
+				CODE_SIGN_IDENTITY = "-";
+				"CODE_SIGN_IDENTITY[sdk=macosx*]" = "-";
+				CODE_SIGN_STYLE = Manual;
+				CURRENT_PROJECT_VERSION = 2;
 				DEAD_CODE_STRIPPING = YES;
-				DEVELOPMENT_TEAM = 7JK8B8T48P;
-				ENABLE_HARDENED_RUNTIME = YES;
+				ENABLE_HARDENED_RUNTIME = NO;
 				ENABLE_PREVIEWS = YES;
 				ENABLE_RESOURCE_ACCESS_AUDIO_INPUT = NO;
 				ENABLE_RESOURCE_ACCESS_CALENDARS = NO;
@@ -386,15 +400,13 @@
 				ENABLE_RESOURCE_ACCESS_CONTACTS = NO;
 				ENABLE_RESOURCE_ACCESS_LOCATION = NO;
 				ENABLE_RESOURCE_ACCESS_PHOTO_LIBRARY = NO;
-				GENERATE_INFOPLIST_FILE = YES;
-				INFOPLIST_KEY_CFBundleDisplayName = "Factorial Clock";
-				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.productivity";
-				INFOPLIST_KEY_LSUIElement = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = FactorialMacApp/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 1.7;
+				MARKETING_VERSION = 1.7.1;
 				PRODUCT_BUNDLE_IDENTIFIER = com.sys4net.factorialclock;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				RUNTIME_EXCEPTION_ALLOW_DYLD_ENVIRONMENT_VARIABLES = NO;
@@ -414,12 +426,12 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_INCLUDE_ALL_APPICON_ASSETS = NO;
 				AUTOMATION_APPLE_EVENTS = NO;
-				"CODE_SIGN_IDENTITY[sdk=macosx*]" = "Apple Development";
-				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1;
+				CODE_SIGN_IDENTITY = "-";
+				"CODE_SIGN_IDENTITY[sdk=macosx*]" = "-";
+				CODE_SIGN_STYLE = Manual;
+				CURRENT_PROJECT_VERSION = 2;
 				DEAD_CODE_STRIPPING = YES;
-				DEVELOPMENT_TEAM = 7JK8B8T48P;
-				ENABLE_HARDENED_RUNTIME = YES;
+				ENABLE_HARDENED_RUNTIME = NO;
 				ENABLE_PREVIEWS = YES;
 				ENABLE_RESOURCE_ACCESS_AUDIO_INPUT = NO;
 				ENABLE_RESOURCE_ACCESS_CALENDARS = NO;
@@ -427,15 +439,13 @@
 				ENABLE_RESOURCE_ACCESS_CONTACTS = NO;
 				ENABLE_RESOURCE_ACCESS_LOCATION = NO;
 				ENABLE_RESOURCE_ACCESS_PHOTO_LIBRARY = NO;
-				GENERATE_INFOPLIST_FILE = YES;
-				INFOPLIST_KEY_CFBundleDisplayName = "Factorial Clock";
-				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.productivity";
-				INFOPLIST_KEY_LSUIElement = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = FactorialMacApp/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 1.7;
+				MARKETING_VERSION = 1.7.1;
 				PRODUCT_BUNDLE_IDENTIFIER = com.sys4net.factorialclock;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				RUNTIME_EXCEPTION_ALLOW_DYLD_ENVIRONMENT_VARIABLES = NO;
@@ -524,6 +534,25 @@
 			defaultConfigurationName = Release;
 		};
 /* End XCConfigurationList section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+		4A1000320000000000000001 /* XCRemoteSwiftPackageReference "Sparkle" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/sparkle-project/Sparkle";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 2.9.3;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		4A1000310000000000000001 /* Sparkle */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 4A1000320000000000000001 /* XCRemoteSwiftPackageReference "Sparkle" */;
+			productName = Sparkle;
+		};
+/* End XCSwiftPackageProductDependency section */
 	};
 	rootObject = 4A0000010000000000000001 /* Project object */;
 }

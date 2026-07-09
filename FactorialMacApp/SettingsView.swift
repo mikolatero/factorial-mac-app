@@ -6,6 +6,7 @@ struct SettingsView: View {
     @EnvironmentObject private var store: SettingsStore
     @EnvironmentObject private var client: FactorialClockingClient
     @EnvironmentObject private var logStore: AppLogStore
+    @EnvironmentObject private var softwareUpdateController: SoftwareUpdateController
 
     @State private var exclusionTitle = "Vacaciones"
     @State private var exclusionStart = Date()
@@ -111,6 +112,18 @@ struct SettingsView: View {
                 LabeledContent("Sesion Factorial", value: authStateText)
                 Text(appState.statusMessage)
                     .foregroundStyle(.secondary)
+            }
+
+            Section("Actualizaciones") {
+                Button {
+                    softwareUpdateController.checkForUpdates()
+                } label: {
+                    Label("Buscar actualizaciones...", systemImage: "arrow.down.circle")
+                }
+                .disabled(!softwareUpdateController.canCheckForUpdates)
+
+                LabeledContent("Comprobacion automatica", value: "Diaria")
+                LabeledContent("Instalacion", value: "Con confirmacion")
             }
 
             Section("Historial") {
