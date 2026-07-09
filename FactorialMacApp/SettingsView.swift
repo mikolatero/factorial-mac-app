@@ -189,15 +189,20 @@ struct SettingsView: View {
                     .textFieldStyle(.roundedBorder)
                     .disabled(!store.settings.challengeSolver.isEnabled)
 
-                Stepper(
-                    value: binding(\.challengeSolver.maxTimeoutMilliseconds),
-                    in: 5_000...180_000,
-                    step: 5_000
-                ) {
-                    LabeledContent(
-                        "Timeout",
-                        value: "\(store.settings.challengeSolver.clampedMaxTimeoutMilliseconds / 1000) s"
-                    )
+                LabeledContent("Timeout") {
+                    HStack(spacing: 8) {
+                        Text("\(store.settings.challengeSolver.clampedMaxTimeoutMilliseconds / 1000) s")
+                            .monospacedDigit()
+                            .foregroundStyle(.secondary)
+
+                        Stepper(
+                            "Timeout",
+                            value: binding(\.challengeSolver.maxTimeoutMilliseconds),
+                            in: 5_000...180_000,
+                            step: 5_000
+                        )
+                        .labelsHidden()
+                    }
                 }
                 .disabled(!store.settings.challengeSolver.isEnabled)
 
