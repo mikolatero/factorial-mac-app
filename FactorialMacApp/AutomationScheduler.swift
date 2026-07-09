@@ -19,7 +19,6 @@ struct ScheduledClockEvent: Equatable {
 
 enum AutomationScheduler {
     static let missedEventTolerance: TimeInterval = 5 * 60
-    private static let randomizedWorkDurationMinutes = 8 * 60
 
     static func activeTemplate(in settings: AppSettings) -> ScheduleTemplate? {
         settings.templates.first(where: \.isActive)
@@ -67,6 +66,32 @@ enum AutomationScheduler {
         }
 
         return candidates.min { $0.scheduledAt < $1.scheduledAt }
+    }
+
+    /// Conserva solo las claves de eventos de hoy y ayer (formato "yyyy-MM-dd-kind"),
+    /// para que el registro persistido no crezca sin limite.
+    static func pruneEventKeys(
+        _ keys: Set<String>,
+        now: Date,
+        calendar: Calendar = .madrid
+    ) -> Set<String> {
+        let validPrefixes = [0, -1].compactMap { offset -> String? in
+            guard let day = calendar.date(byAdding: .day, value: offset, to: now) else {
+                return nil
+            }
+
+            let components = calendar.dateComponents([.year, .month, .day], from: day)
+            return String(
+                format: "%04d-%02d-%02d-",
+                components.year ?? 0,
+                components.month ?? 0,
+                components.day ?? 0
+            )
+        }
+
+        return keys.filter { key in
+            validPrefixes.contains { key.hasPrefix($0) }
+        }
     }
 
     static func dueEvent(
@@ -124,11 +149,12 @@ enum AutomationScheduler {
             return []
         }
 
+        let configuredDurationMinutes = schedule.clockOut.minutesFromMidnight - schedule.clockIn.minutesFromMidnight
         let clockOutDate: Date?
-        if settings.clockRandomization.isEnabled {
+        if settings.clockRandomization.isEnabled, configuredDurationMinutes > 0 {
             clockOutDate = calendar.date(
                 byAdding: .minute,
-                value: randomizedWorkDurationMinutes,
+                value: configuredDurationMinutes,
                 to: clockInDate
             )
         } else {

@@ -22,6 +22,8 @@
 		4A00002D0000000000000001 /* AppLogStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4A00001D0000000000000001 /* AppLogStore.swift */; };
 		4A1000210000000000000001 /* SoftwareUpdateController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4A1000110000000000000001 /* SoftwareUpdateController.swift */; };
 		4A1000300000000000000001 /* Sparkle in Frameworks */ = {isa = PBXBuildFile; productRef = 4A1000310000000000000001 /* Sparkle */; };
+		4A2000210000000000000001 /* ChallengeSolver.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4A2000110000000000000001 /* ChallengeSolver.swift */; };
+		4A2000220000000000000001 /* ChallengeSolverTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4A2000120000000000000001 /* ChallengeSolverTests.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -52,6 +54,8 @@
 		4A00001D0000000000000001 /* AppLogStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppLogStore.swift; sourceTree = "<group>"; };
 		4A1000110000000000000001 /* SoftwareUpdateController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SoftwareUpdateController.swift; sourceTree = "<group>"; };
 		4A1000120000000000000001 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+		4A2000110000000000000001 /* ChallengeSolver.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChallengeSolver.swift; sourceTree = "<group>"; };
+		4A2000120000000000000001 /* ChallengeSolverTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChallengeSolverTests.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -101,6 +105,7 @@
 				4A0000140000000000000001 /* SettingsStore.swift */,
 				4A0000150000000000000001 /* AutomationScheduler.swift */,
 				4A0000160000000000000001 /* FactorialClockingClient.swift */,
+				4A2000110000000000000001 /* ChallengeSolver.swift */,
 				4A0000170000000000000001 /* WebLoginView.swift */,
 				4A0000180000000000000001 /* MenuBarView.swift */,
 				4A0000190000000000000001 /* SettingsView.swift */,
@@ -116,6 +121,7 @@
 			isa = PBXGroup;
 			children = (
 				4A00001B0000000000000001 /* AutomationSchedulerTests.swift */,
+				4A2000120000000000000001 /* ChallengeSolverTests.swift */,
 			);
 			path = FactorialMacAppTests;
 			sourceTree = "<group>";
@@ -232,6 +238,7 @@
 				4A0000240000000000000001 /* SettingsStore.swift in Sources */,
 				4A0000250000000000000001 /* AutomationScheduler.swift in Sources */,
 				4A0000260000000000000001 /* FactorialClockingClient.swift in Sources */,
+				4A2000210000000000000001 /* ChallengeSolver.swift in Sources */,
 				4A0000270000000000000001 /* WebLoginView.swift in Sources */,
 				4A0000280000000000000001 /* MenuBarView.swift in Sources */,
 				4A0000290000000000000001 /* SettingsView.swift in Sources */,
@@ -246,6 +253,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				4A00002B0000000000000001 /* AutomationSchedulerTests.swift in Sources */,
+				4A2000220000000000000001 /* ChallengeSolverTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -390,7 +398,7 @@
 				CODE_SIGN_IDENTITY = "-";
 				"CODE_SIGN_IDENTITY[sdk=macosx*]" = "-";
 				CODE_SIGN_STYLE = Manual;
-				CURRENT_PROJECT_VERSION = 3;
+				CURRENT_PROJECT_VERSION = 4;
 				DEAD_CODE_STRIPPING = YES;
 				ENABLE_HARDENED_RUNTIME = NO;
 				ENABLE_PREVIEWS = YES;
@@ -406,7 +414,7 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 1.7.2;
+				MARKETING_VERSION = 1.7.3;
 				PRODUCT_BUNDLE_IDENTIFIER = com.mikolatero.factorialclock;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				RUNTIME_EXCEPTION_ALLOW_DYLD_ENVIRONMENT_VARIABLES = NO;
@@ -429,7 +437,7 @@
 				CODE_SIGN_IDENTITY = "-";
 				"CODE_SIGN_IDENTITY[sdk=macosx*]" = "-";
 				CODE_SIGN_STYLE = Manual;
-				CURRENT_PROJECT_VERSION = 3;
+				CURRENT_PROJECT_VERSION = 4;
 				DEAD_CODE_STRIPPING = YES;
 				ENABLE_HARDENED_RUNTIME = NO;
 				ENABLE_PREVIEWS = YES;
@@ -445,7 +453,7 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 1.7.2;
+				MARKETING_VERSION = 1.7.3;
 				PRODUCT_BUNDLE_IDENTIFIER = com.mikolatero.factorialclock;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				RUNTIME_EXCEPTION_ALLOW_DYLD_ENVIRONMENT_VARIABLES = NO;

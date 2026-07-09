@@ -48,7 +48,10 @@ struct SettingsView: View {
         }
         .padding()
         .onAppear {
-            store.settings.launchAtLogin = LoginItemController.isEnabled
+            let launchAtLogin = LoginItemController.isEnabled
+            if store.settings.launchAtLogin != launchAtLogin {
+                store.settings.launchAtLogin = launchAtLogin
+            }
         }
     }
 

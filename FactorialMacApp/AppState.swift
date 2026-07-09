@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import UserNotifications
 
@@ -14,7 +15,15 @@ final class AppState: ObservableObject {
     private let notifications: ClockNotificationCenter
     private var timer: Timer?
     private var dashboardRefreshTimer: Timer?
-    private var executedEventKeys: Set<String> = []
+    private var wakeObserver: NSObjectProtocol?
+    private var executedEventKeys: Set<String>
+    private var pendingAutomationFailure: PendingAutomationFailure?
+
+    private struct PendingAutomationFailure {
+        let event: ScheduledClockEvent
+        var lastMessage: String
+        var attemptCount: Int
+    }
 
     init(
         store: SettingsStore = SettingsStore(),
@@ -26,13 +35,17 @@ final class AppState: ObservableObject {
         self.client = client
         self.logStore = logStore
         self.notifications = notifications
+        executedEventKeys = Set(store.settings.executedAutomationEventKeys)
         client.attachLogStore(logStore)
+        store.attachLogStore(logStore)
+        notifications.attachLogStore(logStore)
         logStore.info("App iniciada")
         notifications.start()
         applyNetworkSettings()
         tick()
         startTimer()
         startDashboardRefreshTimer()
+        startWakeObserver()
     }
 
     func openLogin() {
@@ -80,7 +93,9 @@ final class AppState: ObservableObject {
     }
 
     func tick(now: Date = Date()) {
+        pruneExecutedEventKeys(now: now)
         recordMissedEventIfNeeded(now: now)
+        finalizeExpiredAutomationFailure(now: now)
 
         if let event = AutomationScheduler.dueEvent(
             now: now,
@@ -88,7 +103,7 @@ final class AppState: ObservableObject {
             executedEventKeys: executedEventKeys
         ) {
             Task {
-                await performClock(event.kind, isAutomatic: true, eventKey: event.eventKey)
+                await performClock(event.kind, isAutomatic: true, event: event)
             }
         }
 
@@ -113,17 +128,44 @@ final class AppState: ObservableObject {
         dashboardRefreshTimer?.invalidate()
         dashboardRefreshTimer = Timer.scheduledTimer(withTimeInterval: 60 * 60, repeats: true) { [weak self] _ in
             Task { @MainActor in
-                self?.logStore.info("Refresco automatico horario del dashboard")
+                guard let self else {
+                    return
+                }
+
+                // No recargar mientras el usuario puede estar completando el login/MFA.
+                guard self.client.authState != .loginRequired else {
+                    self.logStore.debug("Refresco horario omitido: hay un login pendiente", source: "WebKit")
+                    return
+                }
+
+                self.logStore.info("Refresco automatico horario del dashboard")
                 do {
-                    try await self?.client.refreshDashboardFromOrigin(reason: "Refresco automatico horario del dashboard")
+                    try await self.client.refreshDashboardFromOrigin(reason: "Refresco automatico horario del dashboard")
                 } catch {
-                    self?.logStore.warning("No se pudo refrescar el dashboard: \(error.localizedDescription)", source: "WebKit")
+                    self.logStore.warning("No se pudo refrescar el dashboard: \(error.localizedDescription)", source: "WebKit")
                 }
             }
         }
     }
 
-    private func performClock(_ kind: ClockEventKind, isAutomatic: Bool, eventKey: String? = nil) async {
+    private func startWakeObserver() {
+        wakeObserver = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didWakeNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in
+                guard let self else {
+                    return
+                }
+
+                self.logStore.debug("Mac activo tras la suspension: comprobando fichajes pendientes")
+                self.tick()
+            }
+        }
+    }
+
+    private func performClock(_ kind: ClockEventKind, isAutomatic: Bool, event: ScheduledClockEvent? = nil) async {
         guard !isClocking else {
             return
         }
@@ -152,28 +194,84 @@ final class AppState: ObservableObject {
                     message: message
                 )
             )
-            markExecutedEvent(eventKey)
+            markExecutedEvent(event?.eventKey)
+            if let event, pendingAutomationFailure?.event == event {
+                pendingAutomationFailure = nil
+            }
         } catch {
             statusMessage = error.localizedDescription
             logStore.error(error.localizedDescription, source: "Fichaje")
-            await notifications.notifyClockFailure(
-                kind: kind,
-                isAutomatic: isAutomatic,
-                message: error.localizedDescription
-            )
-            store.addHistory(
-                ClockAttempt(
-                    date: Date(),
+
+            if isAutomatic, let event {
+                // No se marca como ejecutado: dueEvent lo volvera a devolver en los
+                // siguientes ticks mientras dure la ventana de tolerancia (reintento).
+                registerAutomationFailure(event, message: error.localizedDescription)
+            } else {
+                await notifications.notifyClockFailure(
                     kind: kind,
-                    status: .failed,
+                    isAutomatic: isAutomatic,
                     message: error.localizedDescription
                 )
-            )
-            markExecutedEvent(eventKey)
+                store.addHistory(
+                    ClockAttempt(
+                        date: Date(),
+                        kind: kind,
+                        status: .failed,
+                        message: error.localizedDescription
+                    )
+                )
+            }
         }
 
         isClocking = false
         tick()
+    }
+
+    private func registerAutomationFailure(_ event: ScheduledClockEvent, message: String) {
+        if var pending = pendingAutomationFailure, pending.event == event {
+            pending.lastMessage = message
+            pending.attemptCount += 1
+            pendingAutomationFailure = pending
+        } else {
+            pendingAutomationFailure = PendingAutomationFailure(event: event, lastMessage: message, attemptCount: 1)
+        }
+
+        let attempts = pendingAutomationFailure?.attemptCount ?? 1
+        logStore.warning(
+            "\(event.kind.title) automatica fallida (intento \(attempts)). Se reintentara dentro de la ventana de tolerancia.",
+            source: "Fichaje"
+        )
+    }
+
+    private func finalizeExpiredAutomationFailure(now: Date) {
+        guard let pending = pendingAutomationFailure,
+              now.timeIntervalSince(pending.event.scheduledAt) > AutomationScheduler.missedEventTolerance,
+              !executedEventKeys.contains(pending.event.eventKey) else {
+            return
+        }
+
+        pendingAutomationFailure = nil
+        markExecutedEvent(pending.event.eventKey)
+
+        let message = "No se pudo completar \(pending.event.kind.title.lowercased()) automatica tras \(pending.attemptCount) intento(s): \(pending.lastMessage)"
+        statusMessage = message
+        logStore.error(message, source: "Fichaje")
+        store.addHistory(
+            ClockAttempt(
+                date: now,
+                kind: pending.event.kind,
+                status: .failed,
+                message: message
+            )
+        )
+
+        Task {
+            await notifications.notifyClockFailure(
+                kind: pending.event.kind,
+                isAutomatic: true,
+                message: pending.lastMessage
+            )
+        }
     }
 
     private func markExecutedEvent(_ eventKey: String?) {
@@ -182,6 +280,21 @@ final class AppState: ObservableObject {
         }
 
         executedEventKeys.insert(eventKey)
+        persistExecutedEventKeys()
+    }
+
+    private func pruneExecutedEventKeys(now: Date) {
+        let pruned = AutomationScheduler.pruneEventKeys(executedEventKeys, now: now)
+        guard pruned != executedEventKeys else {
+            return
+        }
+
+        executedEventKeys = pruned
+        persistExecutedEventKeys()
+    }
+
+    private func persistExecutedEventKeys() {
+        store.settings.executedAutomationEventKeys = executedEventKeys.sorted()
     }
 
     private func recordMissedEventIfNeeded(now: Date) {
@@ -191,7 +304,7 @@ final class AppState: ObservableObject {
             return
         }
 
-        executedEventKeys.insert(nextEvent.eventKey)
+        markExecutedEvent(nextEvent.eventKey)
         logStore.warning("Fichaje omitido: el Mac desperto tarde o no habia conexion a tiempo")
         store.addHistory(
             ClockAttempt(
@@ -208,9 +321,15 @@ final class AppState: ObservableObject {
 final class ClockNotificationCenter: NSObject, UNUserNotificationCenterDelegate {
     private let center = UNUserNotificationCenter.current()
     private var isAuthorized = false
+    private var didLogDeniedAuthorization = false
+    private weak var logStore: AppLogStore?
 
     func start() {
         center.delegate = self
+    }
+
+    func attachLogStore(_ logStore: AppLogStore) {
+        self.logStore = logStore
     }
 
     func notifyClockSuccess(kind: ClockEventKind, isAutomatic: Bool) async {
@@ -239,6 +358,10 @@ final class ClockNotificationCenter: NSObject, UNUserNotificationCenterDelegate 
             isAuthorized = try await center.requestAuthorization(options: [.alert, .sound])
         } catch {
             isAuthorized = false
+            logStore?.warning(
+                "No se pudo solicitar permiso de notificaciones: \(error.localizedDescription)",
+                source: "Notificaciones"
+            )
         }
     }
 
@@ -250,6 +373,13 @@ final class ClockNotificationCenter: NSObject, UNUserNotificationCenterDelegate 
         if !isAuthorized {
             await requestAuthorization()
             guard isAuthorized else {
+                if !didLogDeniedAuthorization {
+                    didLogDeniedAuthorization = true
+                    logStore?.warning(
+                        "Las notificaciones estan desactivadas para la app: no se mostraran avisos de fichaje.",
+                        source: "Notificaciones"
+                    )
+                }
                 return
             }
         }
@@ -266,7 +396,14 @@ final class ClockNotificationCenter: NSObject, UNUserNotificationCenterDelegate 
             trigger: nil
         )
 
-        try? await center.add(request)
+        do {
+            try await center.add(request)
+        } catch {
+            logStore?.warning(
+                "No se pudo mostrar la notificacion: \(error.localizedDescription)",
+                source: "Notificaciones"
+            )
+        }
     }
 
     nonisolated func userNotificationCenter(

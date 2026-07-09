@@ -9,16 +9,27 @@ APPCAST_WORK_DIR="$ROOT_DIR/build/appcast"
 DOCS_DIR="$ROOT_DIR/docs"
 APP_NAME="FactorialMacApp.app"
 RELEASE_NAME="FactorialClock"
+APP_BUNDLE_ID="com.mikolatero.factorialclock"
+export APP_BUNDLE_ID
 
+# Lee un build setting SOLO del target de la app (identificado por su bundle id),
+# para no capturar los valores del target de tests.
 read_build_setting() {
     local key="$1"
-    awk -F' = ' -v key="$key" '$1 ~ key {
-        value = $2
-        gsub(/;/, "", value)
-        gsub(/"/, "", value)
-        print value
-        exit
-    }' "$PROJECT_FILE"
+    SETTING_KEY="$key" /usr/bin/perl -0ne '
+        my $key = $ENV{SETTING_KEY};
+        while (/buildSettings = \{.*?\n\t\t\t\};/sg) {
+            my $block = $&;
+            next unless $block =~ /PRODUCT_BUNDLE_IDENTIFIER = \Q$ENV{APP_BUNDLE_ID}\E;/;
+            if ($block =~ /\Q$key\E = ([^;]+);/) {
+                my $value = $1;
+                $value =~ s/^"//;
+                $value =~ s/"$//;
+                print $value;
+                exit;
+            }
+        }
+    ' "$PROJECT_FILE"
 }
 
 MARKETING_VERSION="$(read_build_setting MARKETING_VERSION)"

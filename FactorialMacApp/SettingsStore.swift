@@ -10,15 +10,34 @@ final class SettingsStore: ObservableObject {
 
     private let defaults: UserDefaults
     private let key = "factorial.clock.settings"
+    private weak var logStore: AppLogStore?
+    private let storedSettingsDecodingError: String?
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
 
-        if let data = defaults.data(forKey: key),
-           let decoded = try? JSONDecoder.settingsDecoder.decode(AppSettings.self, from: data) {
-            settings = decoded
+        if let data = defaults.data(forKey: key) {
+            do {
+                settings = try JSONDecoder.settingsDecoder.decode(AppSettings.self, from: data)
+                storedSettingsDecodingError = nil
+            } catch {
+                settings = .defaultSettings
+                storedSettingsDecodingError = error.localizedDescription
+            }
         } else {
             settings = .defaultSettings
+            storedSettingsDecodingError = nil
+        }
+    }
+
+    func attachLogStore(_ logStore: AppLogStore) {
+        self.logStore = logStore
+
+        if let storedSettingsDecodingError {
+            logStore.warning(
+                "No se pudieron leer los ajustes guardados y se restauraron los valores por defecto: \(storedSettingsDecodingError)",
+                source: "Ajustes"
+            )
         }
     }
 
@@ -35,11 +54,15 @@ final class SettingsStore: ObservableObject {
     }
 
     private func save() {
-        guard let data = try? JSONEncoder.settingsEncoder.encode(settings) else {
-            return
+        do {
+            let data = try JSONEncoder.settingsEncoder.encode(settings)
+            defaults.set(data, forKey: key)
+        } catch {
+            logStore?.error(
+                "No se pudieron guardar los ajustes: \(error.localizedDescription)",
+                source: "Ajustes"
+            )
         }
-
-        defaults.set(data, forKey: key)
     }
 }
 

@@ -139,7 +139,9 @@ final class AutomationSchedulerTests: XCTestCase {
         XCTAssertTrue((-5...5).contains(offset))
     }
 
-    func testRandomizedClockOutIsEightHoursAfterClockIn() throws {
+    func testRandomizedClockOutPreservesConfiguredDuration() throws {
+        // El horario configurado es 9:00-18:00 (9 h): la salida aleatorizada debe
+        // mantener esa duracion desde la entrada, no una jornada fija.
         let settings = randomizedSettings(maxOffsetMinutes: 5)
         let now = try date(year: 2026, month: 6, day: 1, hour: 8, minute: 0)
         let clockInEvent = try XCTUnwrap(
@@ -154,7 +156,21 @@ final class AutomationSchedulerTests: XCTestCase {
         )
 
         XCTAssertEqual(clockOutEvent.kind, .clockOut)
-        XCTAssertEqual(clockOutEvent.scheduledAt.timeIntervalSince(clockInEvent.scheduledAt), 8 * 60 * 60)
+        XCTAssertEqual(clockOutEvent.scheduledAt.timeIntervalSince(clockInEvent.scheduledAt), 9 * 60 * 60)
+    }
+
+    func testPruneEventKeysKeepsOnlyTodayAndYesterday() throws {
+        let now = try date(year: 2026, month: 6, day: 3, hour: 9, minute: 0)
+        let keys: Set<String> = [
+            "2026-06-03-clockIn",
+            "2026-06-02-clockOut",
+            "2026-06-01-clockIn",
+            "2025-12-31-clockOut"
+        ]
+
+        let pruned = AutomationScheduler.pruneEventKeys(keys, now: now, calendar: calendar)
+
+        XCTAssertEqual(pruned, ["2026-06-03-clockIn", "2026-06-02-clockOut"])
     }
 
     func testRandomizedDueEventRunsAtRandomizedClockIn() throws {
@@ -215,6 +231,38 @@ final class AutomationSchedulerTests: XCTestCase {
         XCTAssertEqual(settings.httpProxy, .defaultSettings)
         XCTAssertEqual(settings.challengeSolver, .defaultSettings)
         XCTAssertEqual(settings.clockRandomization, .defaultSettings)
+        XCTAssertEqual(settings.executedAutomationEventKeys, [])
+    }
+
+    func testSettingsDecodePartialPayloadKeepsPresentFields() throws {
+        // Un blob con claves ausentes no debe invalidar toda la decodificacion:
+        // los campos presentes se conservan y el resto toma sus valores por defecto.
+        let payload = """
+        {
+          "selectedLocation": "Remoto",
+          "isAutomationPaused": true
+        }
+        """.data(using: .utf8)!
+
+        let settings = try JSONDecoder.settingsDecoder.decode(AppSettings.self, from: payload)
+
+        XCTAssertEqual(settings.selectedLocation, "Remoto")
+        XCTAssertTrue(settings.isAutomationPaused)
+        XCTAssertEqual(settings.templates.count, 1)
+        XCTAssertEqual(settings.templates.first?.name, "Oficina")
+        XCTAssertEqual(settings.exclusions, [])
+        XCTAssertEqual(settings.history, [])
+        XCTAssertEqual(settings.httpProxy, .defaultSettings)
+    }
+
+    func testSettingsRoundTripPersistsExecutedAutomationEventKeys() throws {
+        var settings = AppSettings.defaultSettings
+        settings.executedAutomationEventKeys = ["2026-06-01-clockIn", "2026-06-01-clockOut"]
+
+        let data = try JSONEncoder.settingsEncoder.encode(settings)
+        let decoded = try JSONDecoder.settingsDecoder.decode(AppSettings.self, from: data)
+
+        XCTAssertEqual(decoded.executedAutomationEventKeys, ["2026-06-01-clockIn", "2026-06-01-clockOut"])
     }
 
     func testChallengeSolverDefaultsToFlareSolverrEndpoint() throws {
@@ -237,6 +285,39 @@ final class AutomationSchedulerTests: XCTestCase {
         )
 
         XCTAssertEqual(solver.endpointURL?.absoluteString, "http://localhost:8191/scrape")
+    }
+
+    func testChallengeSolverKeepsPrivateNetworkHTTP() throws {
+        let solver = ChallengeSolverSettings(
+            isEnabled: true,
+            api: .trawlScrape,
+            baseURL: "http://172.16.0.12",
+            maxTimeoutMilliseconds: 60_000
+        )
+
+        XCTAssertEqual(solver.endpointURL?.absoluteString, "http://172.16.0.12/scrape")
+    }
+
+    func testChallengeSolverKeepsHomeNetworkHTTP() throws {
+        let solver = ChallengeSolverSettings(
+            isEnabled: true,
+            api: .trawlScrape,
+            baseURL: "http://192.168.1.20:8191",
+            maxTimeoutMilliseconds: 60_000
+        )
+
+        XCTAssertEqual(solver.endpointURL?.absoluteString, "http://192.168.1.20:8191/scrape")
+    }
+
+    func testChallengeSolverUpgradesRemoteHTTPToHTTPS() throws {
+        let solver = ChallengeSolverSettings(
+            isEnabled: true,
+            api: .trawlScrape,
+            baseURL: "http://cfbypass.chema.plus/scrape",
+            maxTimeoutMilliseconds: 60_000
+        )
+
+        XCTAssertEqual(solver.endpointURL?.absoluteString, "https://cfbypass.chema.plus/scrape")
     }
 
     private func date(year: Int, month: Int, day: Int, hour: Int, minute: Int) throws -> Date {

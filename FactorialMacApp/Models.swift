@@ -239,12 +239,48 @@ struct ChallengeSolverSettings: Codable, Equatable {
             return nil
         }
 
+        if components.scheme?.lowercased() == "http",
+           let host = components.host,
+           !Self.isLocalResolverHost(host) {
+            components.scheme = "https"
+        }
+
         let currentPath = components.path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
         if currentPath.isEmpty {
             components.path = api.path
         }
 
         return components.url
+    }
+
+    private static func isLocalResolverHost(_ host: String) -> Bool {
+        let normalizedHost = host.lowercased()
+        if normalizedHost == "localhost" ||
+            normalizedHost == "::1" ||
+            normalizedHost == "0.0.0.0" ||
+            normalizedHost.hasSuffix(".local") {
+            return true
+        }
+
+        if normalizedHost.hasPrefix("fc") ||
+            normalizedHost.hasPrefix("fd") ||
+            normalizedHost.hasPrefix("fe80:") {
+            return true
+        }
+
+        let octets = normalizedHost
+            .split(separator: ".")
+            .compactMap { Int($0) }
+
+        guard octets.count == 4 else {
+            return false
+        }
+
+        return octets[0] == 10 ||
+            octets[0] == 127 ||
+            octets[0] == 169 && octets[1] == 254 ||
+            octets[0] == 172 && (16...31).contains(octets[1]) ||
+            octets[0] == 192 && octets[1] == 168
     }
 
     var clampedMaxTimeoutMilliseconds: Int {
@@ -298,6 +334,7 @@ struct AppSettings: Codable, Equatable {
     var httpProxy: HTTPProxySettings
     var challengeSolver: ChallengeSolverSettings
     var clockRandomization: ClockRandomizationSettings
+    var executedAutomationEventKeys: [String]
 
     init(
         isAutomationPaused: Bool,
@@ -308,7 +345,8 @@ struct AppSettings: Codable, Equatable {
         history: [ClockAttempt],
         httpProxy: HTTPProxySettings = .defaultSettings,
         challengeSolver: ChallengeSolverSettings = .defaultSettings,
-        clockRandomization: ClockRandomizationSettings = .defaultSettings
+        clockRandomization: ClockRandomizationSettings = .defaultSettings,
+        executedAutomationEventKeys: [String] = []
     ) {
         self.isAutomationPaused = isAutomationPaused
         self.launchAtLogin = launchAtLogin
@@ -319,6 +357,7 @@ struct AppSettings: Codable, Equatable {
         self.httpProxy = httpProxy
         self.challengeSolver = challengeSolver
         self.clockRandomization = clockRandomization
+        self.executedAutomationEventKeys = executedAutomationEventKeys
     }
 
     static var defaultSettings: AppSettings {
@@ -345,19 +384,21 @@ struct AppSettings: Codable, Equatable {
         case httpProxy
         case challengeSolver
         case clockRandomization
+        case executedAutomationEventKeys
     }
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
-        isAutomationPaused = try container.decode(Bool.self, forKey: .isAutomationPaused)
-        launchAtLogin = try container.decode(Bool.self, forKey: .launchAtLogin)
-        selectedLocation = try container.decode(String.self, forKey: .selectedLocation)
-        templates = try container.decode([ScheduleTemplate].self, forKey: .templates)
-        exclusions = try container.decode([ExclusionRange].self, forKey: .exclusions)
-        history = try container.decode([ClockAttempt].self, forKey: .history)
+        isAutomationPaused = try container.decodeIfPresent(Bool.self, forKey: .isAutomationPaused) ?? false
+        launchAtLogin = try container.decodeIfPresent(Bool.self, forKey: .launchAtLogin) ?? false
+        selectedLocation = try container.decodeIfPresent(String.self, forKey: .selectedLocation) ?? "Oficina"
+        templates = try container.decodeIfPresent([ScheduleTemplate].self, forKey: .templates) ?? [.standardOffice]
+        exclusions = try container.decodeIfPresent([ExclusionRange].self, forKey: .exclusions) ?? []
+        history = try container.decodeIfPresent([ClockAttempt].self, forKey: .history) ?? []
         httpProxy = try container.decodeIfPresent(HTTPProxySettings.self, forKey: .httpProxy) ?? .defaultSettings
         challengeSolver = try container.decodeIfPresent(ChallengeSolverSettings.self, forKey: .challengeSolver) ?? .defaultSettings
         clockRandomization = try container.decodeIfPresent(ClockRandomizationSettings.self, forKey: .clockRandomization) ?? .defaultSettings
+        executedAutomationEventKeys = try container.decodeIfPresent([String].self, forKey: .executedAutomationEventKeys) ?? []
     }
 }
 
