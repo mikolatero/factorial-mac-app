@@ -38,6 +38,14 @@ En esa misma pestana puedes activar un resolvedor local:
 
 La app importa las cookies y el user agent devueltos por el resolvedor en la sesion WebKit antes de cargar Factorial. Si la llamada directa de fichaje recibe HTTP 403, 429 o 503, refresca esa sesion con el resolvedor y reintenta una vez.
 
+Para que el bypass de Cloudflare funcione, el resolvedor debe ejecutarse en local o en una maquina que salga a Internet con la misma IP publica que la app. La cookie `cf_clearance` que devuelve Cloudflare queda ligada al contexto con el que se resolvio el challenge, especialmente IP publica y user agent. Por eso un TRAWL remoto tipo VPS puede devolver HTML y cookies validas desde `curl`, pero WebKit volvera a ver el captcha si despues Factorial se abre desde otra IP.
+
+Configuraciones recomendadas:
+
+- Docker local: `http://127.0.0.1:8191`.
+- Docker en la LAN: `http://192.168.x.x:8191` o `http://172.16.x.x:8191`, siempre que esa maquina y el Mac compartan la misma salida publica.
+- Evita un resolvedor remoto por HTTPS si la app no navega tambien por esa misma IP, porque los fichajes o el login quedaran desalineados respecto a la cookie de Cloudflare.
+
 ## Tests
 
 ```sh
