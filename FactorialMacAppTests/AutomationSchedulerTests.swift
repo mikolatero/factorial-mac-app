@@ -101,6 +101,55 @@ final class AutomationSchedulerTests: XCTestCase {
         XCTAssertNil(event)
     }
 
+    func testAutomaticRetryThrottleBlocksImmediateRetry() throws {
+        let settings = AppSettings.defaultSettings
+        let failureDate = try date(year: 2026, month: 6, day: 1, hour: 9, minute: 1)
+        let event = try XCTUnwrap(
+            AutomationScheduler.dueEvent(
+                now: failureDate,
+                settings: settings,
+                executedEventKeys: [],
+                calendar: calendar
+            )
+        )
+        var throttle = AutomationRetryThrottle()
+
+        throttle.recordFailure(for: event, now: failureDate)
+
+        XCTAssertFalse(throttle.allowsAttempt(for: event, now: failureDate))
+        XCTAssertFalse(
+            throttle.allowsAttempt(
+                for: event,
+                now: failureDate.addingTimeInterval(AutomationScheduler.automaticRetryInterval - 1)
+            )
+        )
+        XCTAssertTrue(
+            throttle.allowsAttempt(
+                for: event,
+                now: failureDate.addingTimeInterval(AutomationScheduler.automaticRetryInterval)
+            )
+        )
+    }
+
+    func testAutomaticRetryThrottleClearAllowsRetry() throws {
+        let settings = AppSettings.defaultSettings
+        let failureDate = try date(year: 2026, month: 6, day: 1, hour: 9, minute: 1)
+        let event = try XCTUnwrap(
+            AutomationScheduler.dueEvent(
+                now: failureDate,
+                settings: settings,
+                executedEventKeys: [],
+                calendar: calendar
+            )
+        )
+        var throttle = AutomationRetryThrottle()
+        throttle.recordFailure(for: event, now: failureDate)
+
+        throttle.clear(for: event)
+
+        XCTAssertTrue(throttle.allowsAttempt(for: event, now: failureDate))
+    }
+
     func testExecutedEventDoesNotRunTwice() throws {
         let settings = AppSettings.defaultSettings
         let now = try date(year: 2026, month: 6, day: 1, hour: 9, minute: 1)

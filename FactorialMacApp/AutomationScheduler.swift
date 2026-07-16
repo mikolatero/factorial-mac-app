@@ -19,6 +19,7 @@ struct ScheduledClockEvent: Equatable {
 
 enum AutomationScheduler {
     static let missedEventTolerance: TimeInterval = 5 * 60
+    static let automaticRetryInterval: TimeInterval = 30
 
     static func activeTemplate(in settings: AppSettings) -> ScheduleTemplate? {
         settings.templates.first(where: \.isActive)
@@ -228,5 +229,33 @@ enum AutomationScheduler {
         }
 
         return hash
+    }
+}
+
+struct AutomationRetryThrottle: Equatable {
+    private(set) var eventKey: String?
+    private(set) var retryNotBefore: Date?
+
+    func allowsAttempt(for event: ScheduledClockEvent, now: Date) -> Bool {
+        guard eventKey == event.eventKey,
+              let retryNotBefore else {
+            return true
+        }
+
+        return now >= retryNotBefore
+    }
+
+    mutating func recordFailure(for event: ScheduledClockEvent, now: Date) {
+        eventKey = event.eventKey
+        retryNotBefore = now.addingTimeInterval(AutomationScheduler.automaticRetryInterval)
+    }
+
+    mutating func clear(for event: ScheduledClockEvent? = nil) {
+        if let event, eventKey != event.eventKey {
+            return
+        }
+
+        eventKey = nil
+        retryNotBefore = nil
     }
 }

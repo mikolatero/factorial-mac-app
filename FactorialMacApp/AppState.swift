@@ -18,6 +18,7 @@ final class AppState: ObservableObject {
     private var wakeObserver: NSObjectProtocol?
     private var executedEventKeys: Set<String>
     private var pendingAutomationFailure: PendingAutomationFailure?
+    private var automationRetryThrottle = AutomationRetryThrottle()
 
     private struct PendingAutomationFailure {
         let event: ScheduledClockEvent
@@ -102,8 +103,12 @@ final class AppState: ObservableObject {
             settings: store.settings,
             executedEventKeys: executedEventKeys
         ) {
-            Task {
-                await performClock(event.kind, isAutomatic: true, event: event)
+            if client.authState == .loginRequired {
+                registerLoginRequiredIfNeeded(event, now: now)
+            } else if automationRetryThrottle.allowsAttempt(for: event, now: now) {
+                Task {
+                    await performClock(event.kind, isAutomatic: true, event: event)
+                }
             }
         }
 
@@ -197,6 +202,7 @@ final class AppState: ObservableObject {
             markExecutedEvent(event?.eventKey)
             if let event, pendingAutomationFailure?.event == event {
                 pendingAutomationFailure = nil
+                automationRetryThrottle.clear(for: event)
             }
         } catch {
             statusMessage = error.localizedDescription
@@ -204,8 +210,9 @@ final class AppState: ObservableObject {
 
             if isAutomatic, let event {
                 // No se marca como ejecutado: dueEvent lo volvera a devolver en los
-                // siguientes ticks mientras dure la ventana de tolerancia (reintento).
-                registerAutomationFailure(event, message: error.localizedDescription)
+                // siguientes ticks mientras dure la ventana de tolerancia. El throttle
+                // impide que un fallo inmediato provoque un bucle de peticiones.
+                registerAutomationFailure(event, message: error.localizedDescription, now: Date())
             } else {
                 await notifications.notifyClockFailure(
                     kind: kind,
@@ -227,7 +234,7 @@ final class AppState: ObservableObject {
         tick()
     }
 
-    private func registerAutomationFailure(_ event: ScheduledClockEvent, message: String) {
+    private func registerAutomationFailure(_ event: ScheduledClockEvent, message: String, now: Date) {
         if var pending = pendingAutomationFailure, pending.event == event {
             pending.lastMessage = message
             pending.attemptCount += 1
@@ -236,9 +243,37 @@ final class AppState: ObservableObject {
             pendingAutomationFailure = PendingAutomationFailure(event: event, lastMessage: message, attemptCount: 1)
         }
 
+        automationRetryThrottle.recordFailure(for: event, now: now)
+
         let attempts = pendingAutomationFailure?.attemptCount ?? 1
+        if client.authState == .loginRequired {
+            logStore.warning(
+                "\(event.kind.title) automatica fallida (intento \(attempts)). No se reintentara hasta que la sesion vuelva a estar iniciada.",
+                source: "Fichaje"
+            )
+        } else {
+            logStore.warning(
+                "\(event.kind.title) automatica fallida (intento \(attempts)). Se reintentara en \(Int(AutomationScheduler.automaticRetryInterval)) segundos.",
+                source: "Fichaje"
+            )
+        }
+    }
+
+    private func registerLoginRequiredIfNeeded(_ event: ScheduledClockEvent, now: Date) {
+        guard pendingAutomationFailure?.event != event else {
+            return
+        }
+
+        let message = FactorialClockingError.notAuthenticated.localizedDescription
+        pendingAutomationFailure = PendingAutomationFailure(
+            event: event,
+            lastMessage: message,
+            attemptCount: 1
+        )
+        automationRetryThrottle.recordFailure(for: event, now: now)
+        statusMessage = message
         logStore.warning(
-            "\(event.kind.title) automatica fallida (intento \(attempts)). Se reintentara dentro de la ventana de tolerancia.",
+            "\(event.kind.title) automatica pendiente: se requiere iniciar sesion en Factorial.",
             source: "Fichaje"
         )
     }
@@ -251,6 +286,7 @@ final class AppState: ObservableObject {
         }
 
         pendingAutomationFailure = nil
+        automationRetryThrottle.clear(for: pending.event)
         markExecutedEvent(pending.event.eventKey)
 
         let message = "No se pudo completar \(pending.event.kind.title.lowercased()) automatica tras \(pending.attemptCount) intento(s): \(pending.lastMessage)"
