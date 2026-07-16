@@ -88,7 +88,8 @@ final class AutomationSchedulerTests: XCTestCase {
     }
 
     func testDueEventAfterToleranceIsOmitted() throws {
-        let settings = AppSettings.defaultSettings
+        var settings = AppSettings.defaultSettings
+        settings.automationRecovery.clockInGraceMinutes = 0
         let now = try date(year: 2026, month: 6, day: 1, hour: 9, minute: 6)
 
         let event = AutomationScheduler.dueEvent(
@@ -99,6 +100,200 @@ final class AutomationSchedulerTests: XCTestCase {
         )
 
         XCTAssertNil(event)
+    }
+
+    func testClockInRecoversWithinDefaultTwoHourMargin() throws {
+        let settings = AppSettings.defaultSettings
+        let now = try date(year: 2026, month: 6, day: 1, hour: 10, minute: 59)
+
+        let event = AutomationScheduler.dueEvent(
+            now: now,
+            settings: settings,
+            executedEventKeys: [],
+            calendar: calendar
+        )
+
+        XCTAssertEqual(event?.kind, .clockIn)
+    }
+
+    func testClockInExpiresAtConfiguredDeadline() throws {
+        let settings = AppSettings.defaultSettings
+        let now = try date(year: 2026, month: 6, day: 1, hour: 11, minute: 0)
+
+        let event = AutomationScheduler.dueEvent(
+            now: now,
+            settings: settings,
+            executedEventKeys: [],
+            calendar: calendar
+        )
+
+        XCTAssertNil(event)
+    }
+
+    func testClockInRecoveryNeverPassesClockOut() throws {
+        var settings = settingsWithSchedule(
+            clockIn: TimeOfDay(hour: 9, minute: 0),
+            clockOut: TimeOfDay(hour: 10, minute: 0)
+        )
+        settings.automationRecovery.clockInGraceMinutes = 120
+        let now = try date(year: 2026, month: 6, day: 1, hour: 10, minute: 0)
+
+        let event = AutomationScheduler.dueEvent(
+            now: now,
+            settings: settings,
+            executedEventKeys: [],
+            calendar: calendar
+        )
+
+        XCTAssertEqual(event?.kind, .clockOut)
+    }
+
+    func testLateClockOutRecoversSameDayWhenClockInWasExecuted() throws {
+        let settings = AppSettings.defaultSettings
+        let morning = try date(year: 2026, month: 6, day: 1, hour: 9, minute: 1)
+        let clockIn = try XCTUnwrap(
+            AutomationScheduler.dueEvent(
+                now: morning,
+                settings: settings,
+                executedEventKeys: [],
+                calendar: calendar
+            )
+        )
+        let evening = try date(year: 2026, month: 6, day: 1, hour: 20, minute: 0)
+
+        let event = AutomationScheduler.dueEvent(
+            now: evening,
+            settings: settings,
+            executedEventKeys: [clockIn.eventKey],
+            calendar: calendar
+        )
+
+        XCTAssertEqual(event?.kind, .clockOut)
+        XCTAssertEqual(calendar.component(.day, from: event?.scheduledAt ?? evening), 1)
+    }
+
+    func testLateClockOutRecoversNextMorningBeforeClockIn() throws {
+        let settings = AppSettings.defaultSettings
+        let mondayMorning = try date(year: 2026, month: 6, day: 1, hour: 9, minute: 1)
+        let mondayClockIn = try XCTUnwrap(
+            AutomationScheduler.dueEvent(
+                now: mondayMorning,
+                settings: settings,
+                executedEventKeys: [],
+                calendar: calendar
+            )
+        )
+        let tuesdayMorning = try date(year: 2026, month: 6, day: 2, hour: 8, minute: 30)
+
+        let event = AutomationScheduler.dueEvent(
+            now: tuesdayMorning,
+            settings: settings,
+            executedEventKeys: [mondayClockIn.eventKey],
+            calendar: calendar
+        )
+
+        XCTAssertEqual(event?.kind, .clockOut)
+        XCTAssertEqual(calendar.component(.day, from: event?.scheduledAt ?? tuesdayMorning), 1)
+    }
+
+    func testLateClockOutRequiresRecordedClockIn() throws {
+        let settings = AppSettings.defaultSettings
+        let now = try date(year: 2026, month: 6, day: 1, hour: 20, minute: 0)
+
+        let event = AutomationScheduler.dueEvent(
+            now: now,
+            settings: settings,
+            executedEventKeys: [],
+            calendar: calendar
+        )
+
+        XCTAssertNil(event)
+    }
+
+    func testClockOutWithinBaseToleranceDoesNotRequireRecordedClockIn() throws {
+        let settings = AppSettings.defaultSettings
+        let now = try date(year: 2026, month: 6, day: 1, hour: 18, minute: 3)
+
+        let event = AutomationScheduler.dueEvent(
+            now: now,
+            settings: settings,
+            executedEventKeys: [],
+            calendar: calendar
+        )
+
+        XCTAssertEqual(event?.kind, .clockOut)
+    }
+
+    func testPreviousClockOutExpiresWhenNextClockInStarts() throws {
+        let settings = AppSettings.defaultSettings
+        let mondayMorning = try date(year: 2026, month: 6, day: 1, hour: 9, minute: 1)
+        let mondayClockIn = try XCTUnwrap(
+            AutomationScheduler.dueEvent(
+                now: mondayMorning,
+                settings: settings,
+                executedEventKeys: [],
+                calendar: calendar
+            )
+        )
+        let tuesdayClockInTime = try date(year: 2026, month: 6, day: 2, hour: 9, minute: 0)
+
+        let event = AutomationScheduler.dueEvent(
+            now: tuesdayClockInTime,
+            settings: settings,
+            executedEventKeys: [mondayClockIn.eventKey],
+            calendar: calendar
+        )
+
+        XCTAssertEqual(event?.kind, .clockIn)
+        XCTAssertEqual(calendar.component(.day, from: event?.scheduledAt ?? tuesdayClockInTime), 2)
+    }
+
+    func testClockOutRecoverySpansWeekend() throws {
+        let settings = AppSettings.defaultSettings
+        let fridayMorning = try date(year: 2026, month: 6, day: 5, hour: 9, minute: 1)
+        let fridayClockIn = try XCTUnwrap(
+            AutomationScheduler.dueEvent(
+                now: fridayMorning,
+                settings: settings,
+                executedEventKeys: [],
+                calendar: calendar
+            )
+        )
+        let mondayMorning = try date(year: 2026, month: 6, day: 8, hour: 8, minute: 30)
+
+        let event = AutomationScheduler.dueEvent(
+            now: mondayMorning,
+            settings: settings,
+            executedEventKeys: [fridayClockIn.eventKey],
+            calendar: calendar
+        )
+
+        XCTAssertEqual(event?.kind, .clockOut)
+        XCTAssertEqual(calendar.component(.day, from: event?.scheduledAt ?? mondayMorning), 5)
+    }
+
+    func testClockOutRecoveryContinuesDuringExcludedDay() throws {
+        var settings = AppSettings.defaultSettings
+        let fridayMorning = try date(year: 2026, month: 6, day: 5, hour: 9, minute: 1)
+        let fridayClockIn = try XCTUnwrap(
+            AutomationScheduler.dueEvent(
+                now: fridayMorning,
+                settings: settings,
+                executedEventKeys: [],
+                calendar: calendar
+            )
+        )
+        let monday = try date(year: 2026, month: 6, day: 8, hour: 8, minute: 30)
+        settings.exclusions = [ExclusionRange(title: "Vacaciones", startDate: monday, endDate: monday)]
+
+        let event = AutomationScheduler.dueEvent(
+            now: monday,
+            settings: settings,
+            executedEventKeys: [fridayClockIn.eventKey],
+            calendar: calendar
+        )
+
+        XCTAssertEqual(event?.kind, .clockOut)
     }
 
     func testAutomaticRetryThrottleBlocksImmediateRetry() throws {
@@ -208,18 +403,18 @@ final class AutomationSchedulerTests: XCTestCase {
         XCTAssertEqual(clockOutEvent.scheduledAt.timeIntervalSince(clockInEvent.scheduledAt), 9 * 60 * 60)
     }
 
-    func testPruneEventKeysKeepsOnlyTodayAndYesterday() throws {
-        let now = try date(year: 2026, month: 6, day: 3, hour: 9, minute: 0)
+    func testPruneEventKeysKeepsLastThirtyOneDays() throws {
+        let now = try date(year: 2026, month: 6, day: 30, hour: 9, minute: 0)
         let keys: Set<String> = [
-            "2026-06-03-clockIn",
-            "2026-06-02-clockOut",
-            "2026-06-01-clockIn",
-            "2025-12-31-clockOut"
+            "2026-06-30-clockIn",
+            "2026-06-15-clockOut",
+            "2026-05-31-clockIn",
+            "2026-05-30-clockOut"
         ]
 
         let pruned = AutomationScheduler.pruneEventKeys(keys, now: now, calendar: calendar)
 
-        XCTAssertEqual(pruned, ["2026-06-03-clockIn", "2026-06-02-clockOut"])
+        XCTAssertEqual(pruned, ["2026-06-30-clockIn", "2026-06-15-clockOut", "2026-05-31-clockIn"])
     }
 
     func testRandomizedDueEventRunsAtRandomizedClockIn() throws {
@@ -240,6 +435,38 @@ final class AutomationSchedulerTests: XCTestCase {
         )
 
         XCTAssertEqual(dueEvent, clockInEvent)
+    }
+
+    func testRandomizedNextClockInEndsPreviousClockOutRecovery() throws {
+        let settings = randomizedSettings(maxOffsetMinutes: 5)
+        let beforeFirstClockIn = try date(year: 2026, month: 6, day: 1, hour: 8, minute: 0)
+        let firstClockIn = try XCTUnwrap(
+            AutomationScheduler.nextEvent(after: beforeFirstClockIn, settings: settings, calendar: calendar)
+        )
+        let afterFirstClockIn = firstClockIn.scheduledAt.addingTimeInterval(1)
+        let firstClockOut = try XCTUnwrap(
+            AutomationScheduler.nextEvent(after: afterFirstClockIn, settings: settings, calendar: calendar)
+        )
+        let nextClockIn = try XCTUnwrap(
+            AutomationScheduler.nextEvent(after: firstClockOut.scheduledAt, settings: settings, calendar: calendar)
+        )
+        let beforeNextClockIn = nextClockIn.scheduledAt.addingTimeInterval(-1)
+
+        let pendingClockOut = AutomationScheduler.dueEvent(
+            now: beforeNextClockIn,
+            settings: settings,
+            executedEventKeys: [firstClockIn.eventKey],
+            calendar: calendar
+        )
+        let eventAtNextClockIn = AutomationScheduler.dueEvent(
+            now: nextClockIn.scheduledAt,
+            settings: settings,
+            executedEventKeys: [firstClockIn.eventKey],
+            calendar: calendar
+        )
+
+        XCTAssertEqual(pendingClockOut, firstClockOut)
+        XCTAssertEqual(eventAtNextClockIn, nextClockIn)
     }
 
     func testHTTPProxyParsesHostAndPort() throws {
@@ -280,6 +507,7 @@ final class AutomationSchedulerTests: XCTestCase {
         XCTAssertEqual(settings.httpProxy, .defaultSettings)
         XCTAssertEqual(settings.challengeSolver, .defaultSettings)
         XCTAssertEqual(settings.clockRandomization, .defaultSettings)
+        XCTAssertEqual(settings.automationRecovery, .defaultSettings)
         XCTAssertEqual(settings.executedAutomationEventKeys, [])
     }
 
@@ -302,6 +530,7 @@ final class AutomationSchedulerTests: XCTestCase {
         XCTAssertEqual(settings.exclusions, [])
         XCTAssertEqual(settings.history, [])
         XCTAssertEqual(settings.httpProxy, .defaultSettings)
+        XCTAssertEqual(settings.automationRecovery.clockInGraceMinutes, 120)
     }
 
     func testSettingsRoundTripPersistsExecutedAutomationEventKeys() throws {
@@ -312,6 +541,21 @@ final class AutomationSchedulerTests: XCTestCase {
         let decoded = try JSONDecoder.settingsDecoder.decode(AppSettings.self, from: data)
 
         XCTAssertEqual(decoded.executedAutomationEventKeys, ["2026-06-01-clockIn", "2026-06-01-clockOut"])
+    }
+
+    func testSettingsRoundTripPersistsAutomationRecoveryMargin() throws {
+        var settings = AppSettings.defaultSettings
+        settings.automationRecovery.clockInGraceMinutes = 180
+
+        let data = try JSONEncoder.settingsEncoder.encode(settings)
+        let decoded = try JSONDecoder.settingsDecoder.decode(AppSettings.self, from: data)
+
+        XCTAssertEqual(decoded.automationRecovery.clockInGraceMinutes, 180)
+    }
+
+    func testAutomationRecoveryMarginIsClamped() {
+        XCTAssertEqual(AutomationRecoverySettings(clockInGraceMinutes: -15).clampedClockInGraceMinutes, 0)
+        XCTAssertEqual(AutomationRecoverySettings(clockInGraceMinutes: 900).clampedClockInGraceMinutes, 720)
     }
 
     func testChallengeSolverDefaultsToFlareSolverrEndpoint() throws {
@@ -410,6 +654,33 @@ final class AutomationSchedulerTests: XCTestCase {
                 isEnabled: true,
                 maxClockInOffsetMinutes: maxOffsetMinutes
             )
+        )
+    }
+
+    private func settingsWithSchedule(
+        clockIn: TimeOfDay,
+        clockOut: TimeOfDay
+    ) -> AppSettings {
+        let template = ScheduleTemplate(
+            name: "Pruebas",
+            isActive: true,
+            workDays: (1...7).map { weekday in
+                WorkDaySchedule(
+                    weekday: weekday,
+                    isEnabled: (2...6).contains(weekday),
+                    clockIn: clockIn,
+                    clockOut: clockOut
+                )
+            }
+        )
+
+        return AppSettings(
+            isAutomationPaused: false,
+            launchAtLogin: false,
+            selectedLocation: "Oficina",
+            templates: [template],
+            exclusions: [],
+            history: []
         )
     }
 }

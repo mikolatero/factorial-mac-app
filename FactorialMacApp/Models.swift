@@ -324,6 +324,18 @@ struct ClockRandomizationSettings: Codable, Equatable {
     }
 }
 
+struct AutomationRecoverySettings: Codable, Equatable {
+    var clockInGraceMinutes: Int
+
+    static var defaultSettings: AutomationRecoverySettings {
+        AutomationRecoverySettings(clockInGraceMinutes: 120)
+    }
+
+    var clampedClockInGraceMinutes: Int {
+        min(max(clockInGraceMinutes, 0), 720)
+    }
+}
+
 struct AppSettings: Codable, Equatable {
     var isAutomationPaused: Bool
     var launchAtLogin: Bool
@@ -334,6 +346,7 @@ struct AppSettings: Codable, Equatable {
     var httpProxy: HTTPProxySettings
     var challengeSolver: ChallengeSolverSettings
     var clockRandomization: ClockRandomizationSettings
+    var automationRecovery: AutomationRecoverySettings
     var executedAutomationEventKeys: [String]
 
     init(
@@ -346,6 +359,7 @@ struct AppSettings: Codable, Equatable {
         httpProxy: HTTPProxySettings = .defaultSettings,
         challengeSolver: ChallengeSolverSettings = .defaultSettings,
         clockRandomization: ClockRandomizationSettings = .defaultSettings,
+        automationRecovery: AutomationRecoverySettings = .defaultSettings,
         executedAutomationEventKeys: [String] = []
     ) {
         self.isAutomationPaused = isAutomationPaused
@@ -357,6 +371,7 @@ struct AppSettings: Codable, Equatable {
         self.httpProxy = httpProxy
         self.challengeSolver = challengeSolver
         self.clockRandomization = clockRandomization
+        self.automationRecovery = automationRecovery
         self.executedAutomationEventKeys = executedAutomationEventKeys
     }
 
@@ -384,6 +399,7 @@ struct AppSettings: Codable, Equatable {
         case httpProxy
         case challengeSolver
         case clockRandomization
+        case automationRecovery
         case executedAutomationEventKeys
     }
 
@@ -398,6 +414,7 @@ struct AppSettings: Codable, Equatable {
         httpProxy = try container.decodeIfPresent(HTTPProxySettings.self, forKey: .httpProxy) ?? .defaultSettings
         challengeSolver = try container.decodeIfPresent(ChallengeSolverSettings.self, forKey: .challengeSolver) ?? .defaultSettings
         clockRandomization = try container.decodeIfPresent(ClockRandomizationSettings.self, forKey: .clockRandomization) ?? .defaultSettings
+        automationRecovery = try container.decodeIfPresent(AutomationRecoverySettings.self, forKey: .automationRecovery) ?? .defaultSettings
         executedAutomationEventKeys = try container.decodeIfPresent([String].self, forKey: .executedAutomationEventKeys) ?? []
     }
 }

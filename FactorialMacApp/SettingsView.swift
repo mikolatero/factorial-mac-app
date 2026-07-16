@@ -75,6 +75,28 @@ struct SettingsView: View {
                     .textFieldStyle(.roundedBorder)
             }
 
+            Section("Recuperacion tras reposo") {
+                LabeledContent("Margen de entrada") {
+                    HStack(spacing: 8) {
+                        Text(automationRecoveryGraceText)
+                            .monospacedDigit()
+                            .foregroundStyle(.secondary)
+
+                        Stepper(
+                            "Margen de entrada",
+                            value: automationRecoveryGraceMinutesBinding,
+                            in: 0...720,
+                            step: 15
+                        )
+                        .labelsHidden()
+                    }
+                }
+
+                Text("Al despertar o desbloquear, la entrada se recupera dentro de este margen sin superar la salida. Una salida pendiente se intenta hasta la siguiente entrada.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
             Section("Entrada aleatoria") {
                 Toggle(
                     "Activar entrada aleatoria",
@@ -518,6 +540,34 @@ struct SettingsView: View {
                 appState.settingsDidChange()
             }
         )
+    }
+
+    private var automationRecoveryGraceMinutesBinding: Binding<Int> {
+        Binding(
+            get: { store.settings.automationRecovery.clampedClockInGraceMinutes },
+            set: { minutes in
+                store.settings.automationRecovery.clockInGraceMinutes = min(max(minutes, 0), 720)
+                appState.settingsDidChange()
+            }
+        )
+    }
+
+    private var automationRecoveryGraceText: String {
+        let minutes = store.settings.automationRecovery.clampedClockInGraceMinutes
+        guard minutes > 0 else {
+            return "Solo 5 min"
+        }
+
+        let hours = minutes / 60
+        let remainingMinutes = minutes % 60
+        if hours == 0 {
+            return "\(remainingMinutes) min"
+        }
+        if remainingMinutes == 0 {
+            return "\(hours) h"
+        }
+
+        return "\(hours) h \(remainingMinutes) min"
     }
 
     private func templateNameBinding(_ id: UUID) -> Binding<String> {

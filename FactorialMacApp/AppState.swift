@@ -15,7 +15,8 @@ final class AppState: ObservableObject {
     private let notifications: ClockNotificationCenter
     private var timer: Timer?
     private var dashboardRefreshTimer: Timer?
-    private var wakeObserver: NSObjectProtocol?
+    private var systemResumeObservers: [NSObjectProtocol] = []
+    private var resumeTickTask: Task<Void, Never>?
     private var executedEventKeys: Set<String>
     private var pendingAutomationFailure: PendingAutomationFailure?
     private var automationRetryThrottle = AutomationRetryThrottle()
@@ -46,7 +47,7 @@ final class AppState: ObservableObject {
         tick()
         startTimer()
         startDashboardRefreshTimer()
-        startWakeObserver()
+        startSystemResumeObservers()
     }
 
     func openLogin() {
@@ -153,20 +154,33 @@ final class AppState: ObservableObject {
         }
     }
 
-    private func startWakeObserver() {
-        wakeObserver = NSWorkspace.shared.notificationCenter.addObserver(
-            forName: NSWorkspace.didWakeNotification,
-            object: nil,
-            queue: .main
-        ) { [weak self] _ in
-            Task { @MainActor in
-                guard let self else {
-                    return
-                }
+    private func startSystemResumeObservers() {
+        let center = NSWorkspace.shared.notificationCenter
+        let notifications: [(Notification.Name, String)] = [
+            (NSWorkspace.didWakeNotification, "Mac activo tras la suspension"),
+            (NSWorkspace.sessionDidBecomeActiveNotification, "Sesion de macOS desbloqueada")
+        ]
 
-                self.logStore.debug("Mac activo tras la suspension: comprobando fichajes pendientes")
-                self.tick()
+        systemResumeObservers = notifications.map { name, reason in
+            center.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
+                Task { @MainActor in
+                    self?.scheduleResumeTick(reason: reason)
+                }
             }
+        }
+    }
+
+    private func scheduleResumeTick(reason: String) {
+        resumeTickTask?.cancel()
+        logStore.debug("\(reason): esperando a que la red este disponible")
+        resumeTickTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .seconds(3))
+            guard !Task.isCancelled, let self else {
+                return
+            }
+
+            self.logStore.debug("Comprobando fichajes pendientes tras reactivar el sistema")
+            self.tick()
         }
     }
 
@@ -280,7 +294,10 @@ final class AppState: ObservableObject {
 
     private func finalizeExpiredAutomationFailure(now: Date) {
         guard let pending = pendingAutomationFailure,
-              now.timeIntervalSince(pending.event.scheduledAt) > AutomationScheduler.missedEventTolerance,
+              now >= AutomationScheduler.recoveryDeadline(
+                for: pending.event,
+                settings: store.settings
+              ),
               !executedEventKeys.contains(pending.event.eventKey) else {
             return
         }
@@ -335,19 +352,22 @@ final class AppState: ObservableObject {
 
     private func recordMissedEventIfNeeded(now: Date) {
         guard let nextEvent,
-              now.timeIntervalSince(nextEvent.scheduledAt) > AutomationScheduler.missedEventTolerance,
+              now >= AutomationScheduler.recoveryDeadline(
+                for: nextEvent,
+                settings: store.settings
+              ),
               !executedEventKeys.contains(nextEvent.eventKey) else {
             return
         }
 
         markExecutedEvent(nextEvent.eventKey)
-        logStore.warning("Fichaje omitido: el Mac desperto tarde o no habia conexion a tiempo")
+        logStore.warning("Fichaje omitido: se supero el margen de recuperacion configurado")
         store.addHistory(
             ClockAttempt(
                 date: now,
                 kind: nextEvent.kind,
                 status: .skipped,
-                message: "Omitido porque el Mac desperto tarde o no habia conexion a tiempo"
+                message: "Omitido porque se supero el margen de recuperacion configurado"
             )
         )
     }

@@ -20,6 +20,7 @@ struct ScheduledClockEvent: Equatable {
 enum AutomationScheduler {
     static let missedEventTolerance: TimeInterval = 5 * 60
     static let automaticRetryInterval: TimeInterval = 30
+    static let recoveryLookbackDays = 31
 
     static func activeTemplate(in settings: AppSettings) -> ScheduleTemplate? {
         settings.templates.first(where: \.isActive)
@@ -44,21 +45,14 @@ enum AutomationScheduler {
         let startDay = calendar.startOfDay(for: date)
         var candidates: [ScheduledClockEvent] = []
 
-        for offset in 0..<30 {
-            guard let day = calendar.date(byAdding: .day, value: offset, to: startDay),
-                  !isExcluded(day, settings: settings, calendar: calendar) else {
-                continue
-            }
-
-            let weekday = calendar.component(.weekday, from: day)
-            guard let schedule = template.workDays.first(where: { $0.weekday == weekday && $0.isEnabled }) else {
+        for offset in 0..<recoveryLookbackDays {
+            guard let day = calendar.date(byAdding: .day, value: offset, to: startDay) else {
                 continue
             }
 
             candidates.append(
-                contentsOf: scheduledEvents(
+                contentsOf: scheduledEventsIfEnabled(
                     on: day,
-                    schedule: schedule,
                     template: template,
                     settings: settings,
                     calendar: calendar
@@ -69,15 +63,16 @@ enum AutomationScheduler {
         return candidates.min { $0.scheduledAt < $1.scheduledAt }
     }
 
-    /// Conserva solo las claves de eventos de hoy y ayer (formato "yyyy-MM-dd-kind"),
-    /// para que el registro persistido no crezca sin limite.
+    /// Conserva las claves de los ultimos 31 dias (formato "yyyy-MM-dd-kind").
+    /// Ese horizonte permite recuperar una salida tras fines de semana o ausencias
+    /// sin que el registro persistido crezca sin limite.
     static func pruneEventKeys(
         _ keys: Set<String>,
         now: Date,
         calendar: Calendar = .madrid
     ) -> Set<String> {
-        let validPrefixes = [0, -1].compactMap { offset -> String? in
-            guard let day = calendar.date(byAdding: .day, value: offset, to: now) else {
+        let validPrefixes = (0..<recoveryLookbackDays).compactMap { offset -> String? in
+            guard let day = calendar.date(byAdding: .day, value: -offset, to: now) else {
                 return nil
             }
 
@@ -102,35 +97,171 @@ enum AutomationScheduler {
         calendar: Calendar = .madrid
     ) -> ScheduledClockEvent? {
         guard !settings.isAutomationPaused,
-              let template = activeTemplate(in: settings),
-              !isExcluded(now, settings: settings, calendar: calendar) else {
+              let template = activeTemplate(in: settings) else {
             return nil
         }
 
-        let weekday = calendar.component(.weekday, from: now)
-        guard let schedule = template.workDays.first(where: { $0.weekday == weekday && $0.isEnabled }) else {
-            return nil
-        }
-
-        let candidates = scheduledEvents(
+        var candidates = scheduledEventsIfEnabled(
             on: now,
-            schedule: schedule,
             template: template,
             settings: settings,
             calendar: calendar
         )
 
-        for event in candidates {
-            let elapsed = now.timeIntervalSince(event.scheduledAt)
+        let startDay = calendar.startOfDay(for: now)
+        for offset in 1..<recoveryLookbackDays {
+            guard let day = calendar.date(byAdding: .day, value: -offset, to: startDay) else {
+                continue
+            }
 
-            if elapsed >= 0,
-               elapsed <= missedEventTolerance,
-               !executedEventKeys.contains(event.eventKey) {
+            candidates.append(
+                contentsOf: scheduledEventsIfEnabled(
+                    on: day,
+                    template: template,
+                    settings: settings,
+                    calendar: calendar
+                ).filter { $0.kind == .clockOut }
+            )
+        }
+
+        for event in candidates.sorted(by: { $0.scheduledAt < $1.scheduledAt }) {
+            let elapsed = now.timeIntervalSince(event.scheduledAt)
+            guard elapsed >= 0,
+                  !executedEventKeys.contains(event.eventKey),
+                  canRecover(event, elapsed: elapsed, executedEventKeys: executedEventKeys) else {
+                continue
+            }
+
+            let deadline = recoveryDeadline(
+                for: event,
+                settings: settings,
+                calendar: calendar
+            )
+
+            if now < deadline {
                 return event
             }
         }
 
         return nil
+    }
+
+    static func recoveryDeadline(
+        for event: ScheduledClockEvent,
+        settings: AppSettings,
+        calendar: Calendar = .madrid
+    ) -> Date {
+        let minimumDeadline = event.scheduledAt.addingTimeInterval(missedEventTolerance)
+
+        switch event.kind {
+        case .clockIn:
+            let configuredGrace = TimeInterval(
+                settings.automationRecovery.clampedClockInGraceMinutes * 60
+            )
+            let graceDeadline = event.scheduledAt.addingTimeInterval(
+                max(missedEventTolerance, configuredGrace)
+            )
+
+            guard let template = template(for: event, settings: settings),
+                  let clockOut = scheduledEventsIfEnabled(
+                    on: event.scheduledAt,
+                    template: template,
+                    settings: settings,
+                    calendar: calendar
+                  ).first(where: { $0.kind == .clockOut }) else {
+                return graceDeadline
+            }
+
+            return min(graceDeadline, clockOut.scheduledAt)
+
+        case .clockOut:
+            if let nextClockIn = nextClockIn(
+                after: event.scheduledAt,
+                settings: settings,
+                calendar: calendar
+            ) {
+                return nextClockIn.scheduledAt
+            }
+
+            return calendar.date(
+                byAdding: .day,
+                value: recoveryLookbackDays,
+                to: event.scheduledAt
+            ) ?? minimumDeadline
+        }
+    }
+
+    private static func canRecover(
+        _ event: ScheduledClockEvent,
+        elapsed: TimeInterval,
+        executedEventKeys: Set<String>
+    ) -> Bool {
+        guard event.kind == .clockOut,
+              elapsed > missedEventTolerance else {
+            return true
+        }
+
+        var matchingClockIn = event
+        matchingClockIn.kind = .clockIn
+        return executedEventKeys.contains(matchingClockIn.eventKey)
+    }
+
+    private static func nextClockIn(
+        after date: Date,
+        settings: AppSettings,
+        calendar: Calendar
+    ) -> ScheduledClockEvent? {
+        guard let template = activeTemplate(in: settings) else {
+            return nil
+        }
+
+        let startDay = calendar.startOfDay(for: date)
+        for offset in 0..<recoveryLookbackDays {
+            guard let day = calendar.date(byAdding: .day, value: offset, to: startDay),
+                  let clockIn = scheduledEventsIfEnabled(
+                    on: day,
+                    template: template,
+                    settings: settings,
+                    calendar: calendar
+                  ).first(where: { $0.kind == .clockIn && $0.scheduledAt > date }) else {
+                continue
+            }
+
+            return clockIn
+        }
+
+        return nil
+    }
+
+    private static func template(
+        for event: ScheduledClockEvent,
+        settings: AppSettings
+    ) -> ScheduleTemplate? {
+        settings.templates.first(where: { $0.id == event.templateID }) ?? activeTemplate(in: settings)
+    }
+
+    private static func scheduledEventsIfEnabled(
+        on day: Date,
+        template: ScheduleTemplate,
+        settings: AppSettings,
+        calendar: Calendar
+    ) -> [ScheduledClockEvent] {
+        guard !isExcluded(day, settings: settings, calendar: calendar) else {
+            return []
+        }
+
+        let weekday = calendar.component(.weekday, from: day)
+        guard let schedule = template.workDays.first(where: { $0.weekday == weekday && $0.isEnabled }) else {
+            return []
+        }
+
+        return scheduledEvents(
+            on: day,
+            schedule: schedule,
+            template: template,
+            settings: settings,
+            calendar: calendar
+        )
     }
 
     private static func scheduledEvents(
