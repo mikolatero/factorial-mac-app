@@ -74,7 +74,7 @@ final class FactorialClockingClient: NSObject, ObservableObject {
             do {
                 try await refreshDashboardFromOrigin(
                     reason: "Abriendo Factorial",
-                    forceChallengeSolver: true
+                    forceChallengeSolver: false
                 )
             } catch FactorialClockingError.notAuthenticated {
                 logStore?.info("Sesion de Factorial no iniciada: se requiere login.", source: "WebKit")
@@ -90,7 +90,7 @@ final class FactorialClockingClient: NSObject, ObservableObject {
     ) async throws {
         logStore?.info(reason, source: "WebKit")
         webView.stopLoading()
-        try await prepareChallengeSolverSessionIfNeeded(force: forceChallengeSolver)
+        _ = await prepareChallengeSolverSessionIfAvailable(force: forceChallengeSolver)
 
         let href = try? await currentURLString()
         if href?.isFactorialDashboardURL == true {
@@ -173,7 +173,6 @@ final class FactorialClockingClient: NSObject, ObservableObject {
         logStore?.info("Iniciando \(kind.title.lowercased())", source: "Fichaje")
 
         if webView.url == nil {
-            try await prepareChallengeSolverSessionIfNeeded(force: false)
             try await refreshDashboardFromOrigin(reason: "Preparando dashboard para fichar")
             try await Task.sleep(for: .seconds(2))
         } else {
@@ -193,16 +192,17 @@ final class FactorialClockingClient: NSObject, ObservableObject {
 
         if shouldRefreshChallengeSession(statusCode(from: result)) {
             logStore?.warning("Factorial respondio con HTTP \(statusCode(from: result) ?? 0). Refrescando sesion del resolvedor.", source: "Fichaje")
-            try await prepareChallengeSolverSessionIfNeeded(force: true)
-            result = try await executeClockScript(script)
-            ok = result["ok"] as? Bool ?? false
+            if await prepareChallengeSolverSessionIfAvailable(force: true) {
+                result = try await executeClockScript(script)
+                ok = result["ok"] as? Bool ?? false
 
-            if ok {
-                try await finishGraphQLClock(
-                    kind,
-                    message: "\(kind.title) completada despues de refrescar el resolvedor"
-                )
-                return
+                if ok {
+                    try await finishGraphQLClock(
+                        kind,
+                        message: "\(kind.title) completada despues de refrescar el resolvedor"
+                    )
+                    return
+                }
             }
         }
 
@@ -678,6 +678,7 @@ final class FactorialClockingClient: NSObject, ObservableObject {
             source: "Resolvedor"
         )
         var importedCookieCount = 0
+        var ignoredCookieCount = 0
         var cloudflareUserAgent: String?
         let refreshToken = force ? Self.challengeSolverRefreshToken() : nil
 
@@ -699,10 +700,18 @@ final class FactorialClockingClient: NSObject, ObservableObject {
 
             for cookie in solution.cookies {
                 let appliesToTarget = cookie.applies(to: targetURL, fallbackURL: targetURL)
-                logStore?.debug(
-                    "Cookie recibida \(cookie.debugDescription(fallbackURL: targetURL)); aplica al target=\(appliesToTarget)",
-                    source: "Resolvedor"
-                )
+                guard ChallengeSolverCookiePolicy.shouldImport(
+                    cookie,
+                    for: targetURL,
+                    fallbackURL: targetURL
+                ) else {
+                    ignoredCookieCount += 1
+                    logStore?.debug(
+                        "Cookie del resolvedor omitida para proteger la sesion: \(cookie.name); aplica al target=\(appliesToTarget)",
+                        source: "Resolvedor"
+                    )
+                    continue
+                }
 
                 guard let httpCookie = cookie.httpCookie(fallbackURL: targetURL) else {
                     logStore?.warning(
@@ -712,7 +721,7 @@ final class FactorialClockingClient: NSObject, ObservableObject {
                     continue
                 }
 
-                await setCookie(httpCookie)
+                await setChallengeSolverCookie(httpCookie)
                 logStore?.debug(
                     "Cookie importada en WebKit \(Self.debugDescription(for: httpCookie))",
                     source: "Resolvedor"
@@ -725,9 +734,22 @@ final class FactorialClockingClient: NSObject, ObservableObject {
         preparedChallengeSolverKey = solverKey
         await logRelevantWebKitCookies(reason: "preparacion del resolvedor")
         logStore?.info(
-            "Sesion del resolvedor preparada con \(importedCookieCount) cookies para app y API",
+            "Sesion del resolvedor preparada con \(importedCookieCount) cookies Cloudflare; \(ignoredCookieCount) cookies ajenas a Cloudflare omitidas",
             source: "Resolvedor"
         )
+    }
+
+    private func prepareChallengeSolverSessionIfAvailable(force: Bool) async -> Bool {
+        do {
+            try await prepareChallengeSolverSessionIfNeeded(force: force)
+            return true
+        } catch {
+            logStore?.warning(
+                "Resolvedor no disponible: \(error.localizedDescription). Se continua con las cookies persistentes de WebKit.",
+                source: "Resolvedor"
+            )
+            return false
+        }
     }
 
     private func requestChallengeSolver(
@@ -807,33 +829,27 @@ final class FactorialClockingClient: NSObject, ObservableObject {
         logStore?.debug("User agent de WebKit restablecido", source: "Resolvedor")
     }
 
-    private func setCookie(_ cookie: HTTPCookie) async {
-        let isFactorialClearance = cookie.name.caseInsensitiveCompare("cf_clearance") == .orderedSame &&
-            Self.isFactorialCookieDomain(cookie.domain)
+    private func setChallengeSolverCookie(_ cookie: HTTPCookie) async {
+        let conflicts = ChallengeSolverCookiePolicy.conflictingCookies(
+            beforeImporting: cookie,
+            from: await allWebKitCookies()
+        )
 
-        if isFactorialClearance {
-            await deleteExistingCloudflareCookies()
+        for conflict in conflicts {
+            await deleteCookie(conflict)
+            logStore?.debug(
+                "Cookie Cloudflare anterior sustituida en el mismo dominio y ruta \(Self.debugDescription(for: conflict))",
+                source: "Resolvedor"
+            )
         }
 
         await writeCookie(cookie)
 
-        if isFactorialClearance {
-            await deleteDuplicateCloudflareClearanceCookies(keepingValue: cookie.value)
-            if !(await webKitContainsCookie(cookie)) {
-                logStore?.warning(
-                    "WebKit no conserva la cf_clearance nueva tras importarla. Limpiando datos de API y reintentando.",
-                    source: "Resolvedor"
-                )
-                await removeFactorialAPIWebsiteData()
-                await writeCookie(cookie)
-                await deleteDuplicateCloudflareClearanceCookies(keepingValue: cookie.value)
-
-                if await webKitContainsCookie(cookie) {
-                    logStore?.debug("cf_clearance importada correctamente tras limpieza agresiva", source: "Resolvedor")
-                } else {
-                    logStore?.warning("WebKit sigue sin exponer la cf_clearance recien importada.", source: "Resolvedor")
-                }
-            }
+        if !(await webKitContainsCookie(cookie)) {
+            logStore?.warning(
+                "WebKit no expone la cookie Cloudflare recien importada. Se conserva intacta la sesion de Factorial.",
+                source: "Resolvedor"
+            )
         }
     }
 
@@ -846,69 +862,10 @@ final class FactorialClockingClient: NSObject, ObservableObject {
     }
 
     private func webKitContainsCookie(_ cookie: HTTPCookie) async -> Bool {
-        await allWebKitCookies()
-            .contains { storedCookie in
-                storedCookie.name == cookie.name &&
-                    storedCookie.value == cookie.value &&
-                    storedCookie.domain == cookie.domain &&
-                    storedCookie.path == cookie.path
-            }
-    }
-
-    private func deleteExistingCloudflareCookies() async {
-        for _ in 0..<3 {
-            let cookies = await allWebKitCookies()
-                .filter(Self.isFactorialCloudflareCookie)
-
-            guard !cookies.isEmpty else {
-                return
-            }
-
-            for cookie in cookies {
-                await deleteCookie(cookie)
-                logStore?.debug(
-                    "Cookie Cloudflare anterior eliminada de WebKit \(Self.debugDescription(for: cookie))",
-                    source: "Resolvedor"
-                )
-            }
-        }
-    }
-
-    private func deleteDuplicateCloudflareClearanceCookies(keepingValue value: String) async {
-        for _ in 0..<3 {
-            let duplicates = await allWebKitCookies()
-                .filter { cookie in
-                    cookie.name.caseInsensitiveCompare("cf_clearance") == .orderedSame &&
-                        Self.isFactorialCookieDomain(cookie.domain) &&
-                        cookie.value != value
-                }
-
-            guard !duplicates.isEmpty else {
-                return
-            }
-
-            for cookie in duplicates {
-                await deleteCookie(cookie)
-                logStore?.debug(
-                    "Cookie cf_clearance duplicada eliminada tras importar \(Self.debugDescription(for: cookie))",
-                    source: "Resolvedor"
-                )
-            }
-        }
-
-        let remainingDuplicates = await allWebKitCookies()
-            .filter { cookie in
-                cookie.name.caseInsensitiveCompare("cf_clearance") == .orderedSame &&
-                    Self.isFactorialCookieDomain(cookie.domain) &&
-                    cookie.value != value
-            }
-
-        if !remainingDuplicates.isEmpty {
-            logStore?.warning(
-                "WebKit conserva \(remainingDuplicates.count) cf_clearance antiguas pese a pedir su borrado.",
-                source: "Resolvedor"
-            )
-        }
+        ChallengeSolverCookiePolicy.contains(
+            cookie,
+            in: await allWebKitCookies()
+        )
     }
 
     private func deleteCookie(_ cookie: HTTPCookie) async {
@@ -917,39 +874,6 @@ final class FactorialClockingClient: NSObject, ObservableObject {
                 continuation.resume()
             }
         }
-    }
-
-    private func removeFactorialAPIWebsiteData() async {
-        let dataStore = webView.configuration.websiteDataStore
-        let dataTypes: Set<String> = [WKWebsiteDataTypeCookies]
-        let records = await withCheckedContinuation { continuation in
-            dataStore.fetchDataRecords(ofTypes: dataTypes) { records in
-                continuation.resume(returning: records)
-            }
-        }
-
-        let matchingRecords = records.filter { record in
-            let displayName = record.displayName.lowercased()
-            return displayName == "api.factorialhr.com" ||
-                displayName == "factorialhr.com" ||
-                displayName.hasSuffix(".factorialhr.com")
-        }
-
-        guard !matchingRecords.isEmpty else {
-            logStore?.debug("No hay registros de cookies WebKit para limpiar en api.factorialhr.com", source: "Resolvedor")
-            return
-        }
-
-        await withCheckedContinuation { continuation in
-            dataStore.removeData(ofTypes: dataTypes, for: matchingRecords) {
-                continuation.resume()
-            }
-        }
-
-        let names = matchingRecords
-            .map(\.displayName)
-            .joined(separator: ", ")
-        logStore?.debug("Datos de cookies WebKit limpiados para: \(names)", source: "Resolvedor")
     }
 
     private func allWebKitCookies() async -> [HTTPCookie] {
@@ -1009,21 +933,7 @@ final class FactorialClockingClient: NSObject, ObservableObject {
 
     private static func debugDescription(for cookie: HTTPCookie) -> String {
         let expiry = cookie.expiresDate.map { "expires=\($0)" } ?? "session"
-        return "\(cookie.name)=\(redact(cookie.value)); domain=\(cookie.domain); path=\(cookie.path); \(expiry); secure=\(cookie.isSecure); httpOnly=\(cookie.isHTTPOnly)"
-    }
-
-    private static func isFactorialCookieDomain(_ domain: String) -> Bool {
-        let normalizedDomain = domain.lowercased().trimmingPrefix(".")
-        return normalizedDomain == "factorialhr.com" || normalizedDomain.hasSuffix(".factorialhr.com")
-    }
-
-    private static func isFactorialCloudflareCookie(_ cookie: HTTPCookie) -> Bool {
-        guard isFactorialCookieDomain(cookie.domain) else {
-            return false
-        }
-
-        let cookieName = cookie.name.lowercased()
-        return cookieName == "cf_clearance" || cookieName.hasPrefix("cf_chl_")
+        return "\(cookie.name)=<redacted>; domain=\(cookie.domain); path=\(cookie.path); \(expiry); secure=\(cookie.isSecure); httpOnly=\(cookie.isHTTPOnly)"
     }
 
     private static func challengeSolverRefreshToken() -> String {
@@ -1044,14 +954,6 @@ final class FactorialClockingClient: NSObject, ObservableObject {
         queryItems.append(URLQueryItem(name: "factorial_mac_cf_refresh", value: refreshToken))
         components.queryItems = queryItems
         return components.url ?? url
-    }
-
-    private static func redact(_ value: String) -> String {
-        guard value.count > 12 else {
-            return "<\(value.count) chars>"
-        }
-
-        return "\(value.prefix(6))...\(value.suffix(6)) (\(value.count) chars)"
     }
 
     private static let dashboardReadinessScript = """
@@ -1583,38 +1485,58 @@ final class FactorialClockingClient: NSObject, ObservableObject {
 
 extension FactorialClockingClient: WKNavigationDelegate {
     nonisolated func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
-        let url = webView.url?.absoluteString ?? "URL desconocida"
         Task { @MainActor [weak self] in
-            self?.logStore?.debug("Navegacion iniciada: \(url)", source: "WebKit")
+            guard let self else {
+                return
+            }
+
+            let url = self.webView.url?.absoluteString ?? "URL desconocida"
+            logStore?.debug("Navegacion iniciada: \(url)", source: "WebKit")
         }
     }
 
     nonisolated func webView(_ webView: WKWebView, didReceiveServerRedirectForProvisionalNavigation navigation: WKNavigation!) {
-        let url = webView.url?.absoluteString ?? "URL desconocida"
         Task { @MainActor [weak self] in
-            self?.logStore?.debug("Redirect de navegacion: \(url)", source: "WebKit")
+            guard let self else {
+                return
+            }
+
+            let url = self.webView.url?.absoluteString ?? "URL desconocida"
+            logStore?.debug("Redirect de navegacion: \(url)", source: "WebKit")
         }
     }
 
     nonisolated func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
-        let url = webView.url?.absoluteString ?? "URL desconocida"
-        Task { @MainActor in
-            self.logStore?.debug("Navegacion terminada: \(url)", source: "WebKit")
+        Task { @MainActor [weak self] in
+            guard let self else {
+                return
+            }
+
+            let url = self.webView.url?.absoluteString ?? "URL desconocida"
+            logStore?.debug("Navegacion terminada: \(url)", source: "WebKit")
             await refreshAuthState()
         }
     }
 
     nonisolated func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
-        let url = webView.url?.absoluteString ?? "URL desconocida"
         Task { @MainActor [weak self] in
-            self?.logStore?.warning("Navegacion fallo: \(url) - \(error.localizedDescription)", source: "WebKit")
+            guard let self else {
+                return
+            }
+
+            let url = self.webView.url?.absoluteString ?? "URL desconocida"
+            logStore?.warning("Navegacion fallo: \(url) - \(error.localizedDescription)", source: "WebKit")
         }
     }
 
     nonisolated func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
-        let url = webView.url?.absoluteString ?? "URL desconocida"
         Task { @MainActor [weak self] in
-            self?.logStore?.warning("Navegacion provisional fallo: \(url) - \(error.localizedDescription)", source: "WebKit")
+            guard let self else {
+                return
+            }
+
+            let url = self.webView.url?.absoluteString ?? "URL desconocida"
+            logStore?.warning("Navegacion provisional fallo: \(url) - \(error.localizedDescription)", source: "WebKit")
         }
     }
 }

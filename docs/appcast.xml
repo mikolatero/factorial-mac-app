@@ -3,12 +3,12 @@
     <channel>
         <title>FactorialMacApp</title>
         <item>
-            <title>1.7.5</title>
-            <pubDate>Thu, 16 Jul 2026 08:44:33 +0200</pubDate>
-            <sparkle:version>6</sparkle:version>
-            <sparkle:shortVersionString>1.7.5</sparkle:shortVersionString>
+            <title>1.7.6</title>
+            <pubDate>Mon, 20 Jul 2026 10:46:46 +0200</pubDate>
+            <sparkle:version>7</sparkle:version>
+            <sparkle:shortVersionString>1.7.6</sparkle:shortVersionString>
             <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
-            <enclosure url="https://github.com/mikolatero/factorial-mac-app/releases/download/v1.7.5/FactorialClock-1.7.5-6.zip" length="4714596" type="application/octet-stream" sparkle:edSignature="sj5cKGTaNIbrtkTk0NuuII7nXHsgW6SGjk3YYGBz+VO105Ek4l6SlsZqYID13lpWlsU7GEdntZLhUy2cZdCBDg=="/>
+            <enclosure url="https://github.com/mikolatero/factorial-mac-app/releases/download/v1.7.6/FactorialClock-1.7.6-7.zip" length="4697357" type="application/octet-stream" sparkle:edSignature="jvFmogBqAyodQnLWKUQ7bFhXSOFEtJnlsQbvJpjvPg0hHi/aZoMsYEVJULivD6xvK9PqPNAwgsqNarZY4swaAA=="/>
         </item>
     </channel>
 </rss>

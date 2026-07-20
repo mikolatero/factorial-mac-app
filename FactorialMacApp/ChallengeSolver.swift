@@ -123,16 +123,6 @@ struct ChallengeSolverCookie {
         name.caseInsensitiveCompare("cf_clearance") == .orderedSame
     }
 
-    var redactedValue: String {
-        Self.redact(value)
-    }
-
-    func debugDescription(fallbackURL: URL) -> String {
-        let expiry = expires.map { "expires=\($0)" } ?? "session"
-        let domainDescription = domain?.isEmpty == false ? domain! : fallbackURL.host ?? "sin dominio"
-        return "\(name)=\(redactedValue); domain=\(domainDescription); path=\(path ?? "/"); \(expiry); secure=\(secure); httpOnly=\(httpOnly); sameSite=\(sameSite ?? "nil")"
-    }
-
     init?(dictionary: [String: Any]) {
         guard let name = dictionary["name"] as? String,
               let value = dictionary["value"] as? String,
@@ -209,13 +199,86 @@ struct ChallengeSolverCookie {
 
         return nil
     }
+}
 
-    private static func redact(_ value: String) -> String {
-        guard value.count > 12 else {
-            return "<\(value.count) chars>"
+/// The challenge solver runs in a separate browser session. Only Cloudflare
+/// infrastructure cookies may cross that boundary; importing Factorial
+/// authentication cookies would replace the user's persistent WebKit session.
+enum ChallengeSolverCookiePolicy {
+    static func shouldImport(
+        _ cookie: ChallengeSolverCookie,
+        for targetURL: URL,
+        fallbackURL: URL
+    ) -> Bool {
+        isCloudflareCookieName(cookie.name) &&
+            cookie.applies(to: targetURL, fallbackURL: fallbackURL)
+    }
+
+    static func conflictingCookies(
+        beforeImporting incomingCookie: HTTPCookie,
+        from storedCookies: [HTTPCookie]
+    ) -> [HTTPCookie] {
+        guard isFactorialCloudflareCookie(incomingCookie) else {
+            return []
         }
 
-        return "\(value.prefix(6))...\(value.suffix(6)) (\(value.count) chars)"
+        return storedCookies.filter { storedCookie in
+            isFactorialCloudflareCookie(storedCookie) &&
+                hasSameScope(storedCookie, incomingCookie) &&
+                storedCookie.value != incomingCookie.value
+        }
+    }
+
+    static func contains(_ expectedCookie: HTTPCookie, in storedCookies: [HTTPCookie]) -> Bool {
+        storedCookies.contains { storedCookie in
+            hasSameScope(storedCookie, expectedCookie) &&
+                storedCookie.value == expectedCookie.value
+        }
+    }
+
+    static func isCloudflareCookieName(_ name: String) -> Bool {
+        let normalizedName = name.lowercased()
+        let exactNames = [
+            "cf_clearance",
+            "__cf_bm",
+            "__cflb",
+            "__cfseq",
+            "__cfwaitingroom",
+            "_cfuvid",
+            "cf_ob_info",
+            "cf_use_ob"
+        ]
+
+        return exactNames.contains(normalizedName) ||
+            normalizedName.hasPrefix("cf_chl_")
+    }
+
+    private static func isFactorialCloudflareCookie(_ cookie: HTTPCookie) -> Bool {
+        isCloudflareCookieName(cookie.name) &&
+            isFactorialCookieDomain(cookie.domain)
+    }
+
+    private static func isFactorialCookieDomain(_ domain: String) -> Bool {
+        let normalizedDomain = normalizeDomain(domain)
+        return normalizedDomain == "factorialhr.com" ||
+            normalizedDomain.hasSuffix(".factorialhr.com")
+    }
+
+    private static func hasSameScope(_ lhs: HTTPCookie, _ rhs: HTTPCookie) -> Bool {
+        lhs.name.caseInsensitiveCompare(rhs.name) == .orderedSame &&
+            normalizeDomain(lhs.domain) == normalizeDomain(rhs.domain) &&
+            normalizePath(lhs.path) == normalizePath(rhs.path)
+    }
+
+    private static func normalizeDomain(_ domain: String) -> String {
+        domain
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+            .trimmingPrefix(".")
+    }
+
+    private static func normalizePath(_ path: String) -> String {
+        path.isEmpty ? "/" : path
     }
 }
 

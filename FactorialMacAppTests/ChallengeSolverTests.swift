@@ -79,6 +79,116 @@ final class ChallengeSolverTests: XCTestCase {
         XCTAssertFalse(cookie.applies(to: apiURL, fallbackURL: fallbackURL))
     }
 
+    func testImportPolicyAcceptsOnlyCloudflareCookiesForTarget() throws {
+        let apiURL = URL(string: "https://api.factorialhr.com")!
+        let clearanceCookie = try XCTUnwrap(
+            ChallengeSolverCookie(dictionary: [
+                "name": "cf_clearance",
+                "value": "clearance",
+                "domain": ".api.factorialhr.com"
+            ])
+        )
+        let authenticationCookie = try XCTUnwrap(
+            ChallengeSolverCookie(dictionary: [
+                "name": "_factorial_id_refresh",
+                "value": "refresh-token",
+                "domain": ".factorialhr.com"
+            ])
+        )
+        let clearanceForAnotherHost = try XCTUnwrap(
+            ChallengeSolverCookie(dictionary: [
+                "name": "cf_clearance",
+                "value": "other-clearance",
+                "domain": "app.factorialhr.com"
+            ])
+        )
+
+        XCTAssertTrue(
+            ChallengeSolverCookiePolicy.shouldImport(
+                clearanceCookie,
+                for: apiURL,
+                fallbackURL: apiURL
+            )
+        )
+        XCTAssertFalse(
+            ChallengeSolverCookiePolicy.shouldImport(
+                authenticationCookie,
+                for: apiURL,
+                fallbackURL: apiURL
+            )
+        )
+        XCTAssertFalse(
+            ChallengeSolverCookiePolicy.shouldImport(
+                clearanceForAnotherHost,
+                for: apiURL,
+                fallbackURL: apiURL
+            )
+        )
+    }
+
+    func testConflictSelectionPreservesAuthenticationAndOtherCookieScopes() throws {
+        let incoming = try makeHTTPCookie(
+            name: "cf_clearance",
+            value: "new-clearance",
+            domain: ".api.factorialhr.com"
+        )
+        let oldClearanceInSameScope = try makeHTTPCookie(
+            name: "cf_clearance",
+            value: "old-clearance",
+            domain: "api.factorialhr.com"
+        )
+        let authenticationCookie = try makeHTTPCookie(
+            name: "_factorial_id_refresh",
+            value: "refresh-token",
+            domain: ".factorialhr.com"
+        )
+        let clearanceForAnotherHost = try makeHTTPCookie(
+            name: "cf_clearance",
+            value: "app-clearance",
+            domain: ".app.factorialhr.com"
+        )
+        let clearanceForAnotherPath = try makeHTTPCookie(
+            name: "cf_clearance",
+            value: "api-login-clearance",
+            domain: ".api.factorialhr.com",
+            path: "/login"
+        )
+
+        let conflicts = ChallengeSolverCookiePolicy.conflictingCookies(
+            beforeImporting: incoming,
+            from: [
+                oldClearanceInSameScope,
+                authenticationCookie,
+                clearanceForAnotherHost,
+                clearanceForAnotherPath
+            ]
+        )
+
+        XCTAssertEqual(conflicts.count, 1)
+        XCTAssertEqual(conflicts.first?.value, "old-clearance")
+        XCTAssertFalse(conflicts.contains { $0.name == "_factorial_id_refresh" })
+    }
+
+    func testStoredCookieComparisonNormalizesLeadingDomainDot() throws {
+        let expected = try makeHTTPCookie(
+            name: "cf_clearance",
+            value: "clearance",
+            domain: ".api.factorialhr.com"
+        )
+        let stored = try makeHTTPCookie(
+            name: "CF_CLEARANCE",
+            value: "clearance",
+            domain: "api.factorialhr.com"
+        )
+
+        XCTAssertTrue(
+            ChallengeSolverCookiePolicy.contains(
+                expected,
+                in: [stored]
+            )
+        )
+    }
+
     func testCookieParsesSameSiteNoneMetadata() throws {
         let cookie = try XCTUnwrap(
             ChallengeSolverCookie(dictionary: [
@@ -135,5 +245,22 @@ final class ChallengeSolverTests: XCTestCase {
         """.data(using: .utf8)!
 
         XCTAssertThrowsError(try ChallengeSolverSolution(data: payload))
+    }
+
+    private func makeHTTPCookie(
+        name: String,
+        value: String,
+        domain: String,
+        path: String = "/"
+    ) throws -> HTTPCookie {
+        try XCTUnwrap(
+            HTTPCookie(properties: [
+                .name: name,
+                .value: value,
+                .domain: domain,
+                .path: path,
+                .secure: "TRUE"
+            ])
+        )
     }
 }
